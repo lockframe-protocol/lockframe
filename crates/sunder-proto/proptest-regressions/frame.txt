@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc bde11534ede58b6571828bb6610969f0e74d4d7d3b0a83269569d61c5b1e7337 # shrinks to frame = Frame { header: FrameHeader { magic: "0x53554e44", version: 1, flags: FrameFlags(0x0), opcode: "0x0000", request_id: 0, room_id: "0x00000000000000000000000000000000", sender_id: 0, log_index: 0, hlc_timestamp: 0, epoch: 0, tree_hash: "0000000000000000000000000000000000000000000000000000000000000000", payload_size: 0, .. }, payload: Hello(Hello { version: 1, capabilities: [], auth_token: Some([38, 92, 200, 186, 63, 240, 145, 142, 139, 224, 190, 191, 87, 224, 170, 188, 39]) }) }
