@@ -53,14 +53,14 @@ pub struct FrameHeader {
     // CACHE LINE 1: Routing/Sequencing (bytes 0-63)---
 
     // Protocol identification (8 bytes: 0-7)
-    magic: [u8; 4],  // 0x53554E44 ("SUND" in ASCII)
-    version: u8,     // 0x01
-    flags: u8,       // FrameFlags bitfield
-    opcode: [u8; 2], // u16 operation code
+    magic: [u8; 4],             // 0x53554E44 ("SUND" in ASCII)
+    version: u8,                // 0x01
+    flags: u8,                  // FrameFlags bitfield
+    pub(crate) opcode: [u8; 2], // u16 operation code
 
     // Request/payload metadata (8 bytes: 8-15)
-    request_id: [u8; 4],   // u32 client nonce (4B concurrent requests sufficient)
-    payload_size: [u8; 4], // u32 payload length (moved for alignment)
+    request_id: [u8; 4], // u32 client nonce (4B concurrent requests sufficient)
+    pub(crate) payload_size: [u8; 4], // u32 payload length (moved for alignment)
 
     // Routing context (24 bytes: 16-39)
     room_id: [u8; 16],  // UUID (128-bit)
@@ -240,16 +240,6 @@ impl FrameHeader {
     #[must_use]
     pub fn signature(&self) -> &[u8; 64] {
         &self.signature
-    }
-
-    /// Set the payload size
-    pub(crate) fn set_payload_size(&mut self, size: u32) {
-        self.payload_size = size.to_be_bytes();
-    }
-
-    /// Set the opcode
-    pub(crate) fn set_opcode(&mut self, opcode: Opcode) {
-        self.opcode = opcode.to_u16().to_be_bytes();
     }
 }
 

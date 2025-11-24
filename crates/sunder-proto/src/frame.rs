@@ -82,7 +82,9 @@ impl Frame {
         let payload = payload.into();
 
         #[allow(clippy::cast_possible_truncation)]
-        header.set_payload_size(payload.len() as u32);
+        {
+            header.payload_size = (payload.len() as u32).to_be_bytes();
+        }
 
         Self { header, payload }
     }
@@ -196,7 +198,7 @@ mod tests {
         bytes[0..4].copy_from_slice(&FrameHeader::MAGIC.to_be_bytes());
         bytes[4] = FrameHeader::VERSION;
         let mut header = *FrameHeader::from_bytes(&bytes).unwrap();
-        header.set_opcode(Opcode::Ping);
+        header.opcode = Opcode::Ping.to_u16().to_be_bytes();
 
         // Create frame (payload_size set automatically)
         let payload_bytes = vec![1, 2, 3, 4];
@@ -221,7 +223,7 @@ mod tests {
         bytes[4] = FrameHeader::VERSION;
 
         let mut header = *FrameHeader::from_bytes(&bytes).unwrap();
-        header.set_payload_size(100); // Claim 100 bytes payload
+        header.payload_size = 100u32.to_be_bytes();
 
         let header_bytes = header.to_bytes();
 

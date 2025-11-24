@@ -317,7 +317,7 @@ impl Payload {
     pub fn into_frame(self, mut header: FrameHeader) -> Result<Frame> {
         let mut buf = Vec::new();
         self.encode(&mut buf)?;
-        header.set_opcode(self.opcode());
+        header.opcode = self.opcode().to_u16().to_be_bytes();
         Ok(Frame::new(header, buf))
     }
 
