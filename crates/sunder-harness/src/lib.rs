@@ -10,5 +10,7 @@
 mod sim_env;
 mod sim_transport;
 
+pub mod scenario;
+
 pub use sim_env::SimEnv;
 pub use sim_transport::SimTransport;
