@@ -19,23 +19,6 @@ fn to_box_err<E: std::error::Error + 'static>(e: E) -> Box<dyn std::error::Error
     Box::new(e)
 }
 
-/// Helper to create a valid frame header
-fn create_header(opcode: Opcode) -> FrameHeader {
-    let mut bytes = [0u8; FrameHeader::SIZE];
-
-    // Set magic and version
-    bytes[0..4].copy_from_slice(&FrameHeader::MAGIC.to_be_bytes());
-    bytes[4] = FrameHeader::VERSION;
-
-    let header = FrameHeader::from_bytes(&bytes).expect("valid header").to_owned();
-
-    // Create a mutable copy and set the opcode
-    let mut header_bytes = header.to_bytes();
-    header_bytes[6..8].copy_from_slice(&opcode.to_u16().to_be_bytes());
-
-    FrameHeader::from_bytes(&header_bytes).expect("valid header with opcode").to_owned()
-}
-
 #[test]
 fn ping_pong_basic() {
     let mut sim = turmoil::Builder::new().build();
@@ -43,7 +26,8 @@ fn ping_pong_basic() {
     // Server: respond to Ping with Pong
     sim.host("server", || async move {
         let transport = SimTransport::bind("0.0.0.0:443").await?;
-        let (mut send, mut recv) = transport.accept().await?;
+        let conn = transport.accept().await?;
+        let (mut send, mut recv) = conn.into_split();
 
         // Read frame header (128 bytes)
         let mut header_buf = [0u8; FrameHeader::SIZE];
@@ -60,7 +44,7 @@ fn ping_pong_basic() {
         recv.read_exact(&mut payload_buf).await?;
 
         // Create Pong response
-        let pong_header = create_header(Opcode::Pong);
+        let pong_header = FrameHeader::new(Opcode::Pong);
         let pong_frame = Frame::new(pong_header, Vec::new());
 
         // Send response
@@ -74,14 +58,15 @@ fn ping_pong_basic() {
     // Client: send Ping, expect Pong
     sim.client("client", async {
         let env = SimEnv::new();
-        let stream = SimTransport::connect_to("server:443").await?;
-        let (mut recv, mut send) = tokio::io::split(stream);
+        let transport = SimTransport::client();
+        let conn = transport.connect_to_host("server:443").await?;
+        let (mut send, mut recv) = conn.into_split();
 
         // Wait a bit (virtual time)
         env.sleep(std::time::Duration::from_millis(10)).await;
 
         // Create Ping frame
-        let ping_header = create_header(Opcode::Ping);
+        let ping_header = FrameHeader::new(Opcode::Ping);
         let ping_frame = Frame::new(ping_header, Vec::new());
 
         // Send Ping
@@ -115,7 +100,8 @@ fn ping_pong_with_payload() {
     // Server: echo back Hello message
     sim.host("server", || async move {
         let transport = SimTransport::bind("0.0.0.0:443").await?;
-        let (mut send, mut recv) = transport.accept().await?;
+        let conn = transport.accept().await?;
+        let (mut send, mut recv) = conn.into_split();
 
         // Read frame
         let mut header_buf = [0u8; FrameHeader::SIZE];
@@ -144,7 +130,7 @@ fn ping_pong_with_payload() {
                 });
 
                 let reply_frame =
-                    reply.into_frame(create_header(Opcode::HelloReply)).map_err(to_box_err)?;
+                    reply.into_frame(FrameHeader::new(Opcode::HelloReply)).map_err(to_box_err)?;
 
                 let mut reply_buf = Vec::new();
                 reply_frame.encode(&mut reply_buf).map_err(to_box_err)?;
@@ -161,13 +147,14 @@ fn ping_pong_with_payload() {
 
     // Client: send Hello, expect HelloReply
     sim.client("client", async {
-        let stream = SimTransport::connect_to("server:443").await?;
-        let (mut recv, mut send) = tokio::io::split(stream);
+        let transport = SimTransport::client();
+        let conn = transport.connect_to_host("server:443").await?;
+        let (mut send, mut recv) = conn.into_split();
 
         // Create Hello payload
         let hello = Payload::Hello(Hello { version: 1, capabilities: vec![], auth_token: None });
 
-        let hello_frame = hello.into_frame(create_header(Opcode::Hello)).map_err(to_box_err)?;
+        let hello_frame = hello.into_frame(FrameHeader::new(Opcode::Hello)).map_err(to_box_err)?;
 
         // Send Hello
         let mut hello_buf = Vec::new();
@@ -213,10 +200,12 @@ fn ping_pong_multiple_clients() {
         let transport = SimTransport::bind("0.0.0.0:443").await?;
 
         // Accept first client
-        let (mut send1, mut recv1) = transport.accept().await?;
+        let conn1 = transport.accept().await?;
+        let (mut send1, mut recv1) = conn1.into_split();
 
         // Accept second client
-        let (mut send2, mut recv2) = transport.accept().await?;
+        let conn2 = transport.accept().await?;
+        let (mut send2, mut recv2) = conn2.into_split();
 
         // Handle both clients concurrently
         let task1 = async {
@@ -225,7 +214,7 @@ fn ping_pong_multiple_clients() {
             let header = FrameHeader::from_bytes(&header_buf).map_err(to_box_err)?;
             assert_eq!(header.opcode_enum(), Some(Opcode::Ping));
 
-            let pong = Frame::new(create_header(Opcode::Pong), Vec::new());
+            let pong = Frame::new(FrameHeader::new(Opcode::Pong), Vec::new());
             let mut buf = Vec::new();
             pong.encode(&mut buf).map_err(to_box_err)?;
             send1.write_all(&buf).await?;
@@ -238,7 +227,7 @@ fn ping_pong_multiple_clients() {
             let header = FrameHeader::from_bytes(&header_buf).map_err(to_box_err)?;
             assert_eq!(header.opcode_enum(), Some(Opcode::Ping));
 
-            let pong = Frame::new(create_header(Opcode::Pong), Vec::new());
+            let pong = Frame::new(FrameHeader::new(Opcode::Pong), Vec::new());
             let mut buf = Vec::new();
             pong.encode(&mut buf).map_err(to_box_err)?;
             send2.write_all(&buf).await?;
@@ -253,10 +242,11 @@ fn ping_pong_multiple_clients() {
 
     // Client 1
     sim.client("client1", async {
-        let stream = SimTransport::connect_to("server:443").await?;
-        let (mut recv, mut send) = tokio::io::split(stream);
+        let transport = SimTransport::client();
+        let conn = transport.connect_to_host("server:443").await?;
+        let (mut send, mut recv) = conn.into_split();
 
-        let ping = Frame::new(create_header(Opcode::Ping), Vec::new());
+        let ping = Frame::new(FrameHeader::new(Opcode::Ping), Vec::new());
         let mut buf = Vec::new();
         ping.encode(&mut buf).map_err(to_box_err)?;
         send.write_all(&buf).await?;
@@ -271,10 +261,11 @@ fn ping_pong_multiple_clients() {
 
     // Client 2
     sim.client("client2", async {
-        let stream = SimTransport::connect_to("server:443").await?;
-        let (mut recv, mut send) = tokio::io::split(stream);
+        let transport = SimTransport::client();
+        let conn = transport.connect_to_host("server:443").await?;
+        let (mut send, mut recv) = conn.into_split();
 
-        let ping = Frame::new(create_header(Opcode::Ping), Vec::new());
+        let ping = Frame::new(FrameHeader::new(Opcode::Ping), Vec::new());
         let mut buf = Vec::new();
         ping.encode(&mut buf).map_err(to_box_err)?;
         send.write_all(&buf).await?;

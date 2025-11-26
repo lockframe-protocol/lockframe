@@ -1,131 +1,186 @@
 //! Transport abstraction for network I/O.
 //!
-//! The `Transport` trait abstracts over reliable, bidirectional byte streams.
-//! This allows the same protocol logic to run over:
+//! The `Transport` trait abstracts over connection-oriented transports that
+//! support multiplexed streams. This matches the QUIC model:
 //!
-//! - **QUIC streams** (production via Quinn)
-//! - **TCP streams** (simulation via Turmoil)
+//! - **Connection**: Long-lived, can migrate between IPs, connection-level
+//!   errors
+//! - **Streams**: Short-lived, multiplexed over connection, cheap to create
+//!
+//! # Implementations
+//!
+//! - **`QuinnTransport`** (production): Uses QUIC connections and streams
+//! - **`SimTransport`** (testing): Simulates QUIC semantics over Turmoil's TCP
 //!
 //! # Why Not Simulate QUIC Directly?
 //!
 //! Quinn does not support pluggable time/RNG providers, so deterministic
 //! QUIC simulation would require forking Quinn indefinitely.
 //!
-//! Instead, we abstract at the **stream level**:
+//! Instead, we abstract at the **connection level** but simulate with TCP:
 //!
-//! - Sunder's protocol logic lives *inside* QUIC streams
+//! - Sunder's protocol logic lives inside QUIC streams
 //! - We test Sunder's correctness, not QUIC's reliability
 //! - Turmoil's TCP provides identical stream semantics for testing
 //!
 //! # What We're NOT Testing
 //!
-//! - QUIC-specific behavior (connection migration, 0-RTT, loss recovery)
-//! - UDP datagram delivery (we use reliable streams for control plane)
-//! - Congestion control algorithms
+//! - QUIC-specific behavior (0-RTT, loss recovery, congestion control)
+//! - Connection migration between IPs
+//! - UDP datagram delivery
 //!
 //! # What We ARE Testing
 //!
 //! - Sunder protocol state machine correctness
 //! - Message ordering and sequencing
-//! - Epoch transitions under network faults
 //! - Timeout and retry logic
+//! - Network fault handling
 
 use std::{io, net::SocketAddr};
 
 use async_trait::async_trait;
 use tokio::io::{AsyncRead, AsyncWrite};
 
-/// Abstract transport for reliable, ordered byte streams.
+/// Abstract transport for connection-oriented protocols with multiplexed
+/// streams.
 ///
-/// This trait represents a connection-oriented transport that provides
-/// bidirectional byte streams with the following guarantees:
+/// This trait models QUIC's architecture:
+/// - One **Connection** can have many **Streams**
+/// - Connections are long-lived and have connection-level operations
+/// - Streams are cheap, multiplexed, and have stream-level operations
 ///
-/// - **Reliability**: Bytes are delivered or an error is returned
-/// - **Ordering**: Bytes arrive in the order they were sent
-/// - **Flow Control**: Backpressure prevents sender from overwhelming receiver
+/// # Lifecycle
 ///
-/// # Implementations
-///
-/// - **`QuinnTransport`** (production): Uses QUIC bidirectional streams
-/// - **`TurmoilTransport`** (simulation): Uses deterministic TCP streams
-///
-/// # Design Note: Why Bidirectional Streams?
-///
-/// QUIC supports unidirectional streams, but Sunder's protocol is
-/// request-response oriented (client sends Frame, server responds with Frame).
-/// Bidirectional streams simplify this pattern.
+/// ```text
+/// Server:                      Client:
+/// Transport::bind()            Transport::connect()
+///   ↓                            ↓
+/// accept()                     [Connection returned]
+///   ↓                            ↓
+/// [Connection returned]        open_bi() / accept_bi()
+///   ↓                            ↓
+/// accept_bi()                  [Stream returned]
+///   ↓
+/// [Stream returned]
+/// ```
 #[async_trait]
 pub trait Transport: Send + Sync + 'static {
-    /// Type of stream for sending data.
+    /// Type representing a connection to a peer.
     ///
-    /// Must implement `AsyncWrite` for writing bytes.
-    type SendStream: AsyncWrite + Unpin + Send + 'static;
+    /// A connection is long-lived and supports:
+    /// - Opening new streams
+    /// - Accepting incoming streams
+    /// - Connection-level close with error code
+    type Connection: TransportConnection;
 
-    /// Type of stream for receiving data.
-    ///
-    /// Must implement `AsyncRead` for reading bytes.
-    type RecvStream: AsyncRead + Unpin + Send + 'static;
-
-    /// Accepts an incoming connection, returning send/receive streams.
+    /// Accept an incoming connection.
     ///
     /// # Behavior
     ///
-    /// - **Blocks** until a connection is available
-    /// - **Returns** a pair of streams: `(send, recv)`
-    /// - **Errors** if the endpoint is closed or network fails
+    /// - **Blocks** until a connection is established
+    /// - **Returns** a Connection handle
+    /// - **Errors** if the endpoint is closed or handshake fails
     ///
     /// # Implementation Notes
     ///
-    /// - **Quinn**: Calls `endpoint.accept()` then `connection.accept_bi()`
-    /// - **Turmoil**: Calls `listener.accept()` then splits the TCP stream
+    /// - **Quinn**: `endpoint.accept()` then complete handshake
+    /// - **Turmoil**: `listener.accept()` returns TCP connection
     ///
     /// # Errors
     ///
     /// Returns `std::io::Error` if:
     /// - The endpoint is shut down
     /// - The connection fails during handshake
-    /// - The peer closes the connection immediately
-    async fn accept(&self) -> io::Result<(Self::SendStream, Self::RecvStream)>;
+    /// - Network errors occur
+    async fn accept(&self) -> io::Result<Self::Connection>;
 
-    /// Connects to a remote endpoint, returning send/receive streams.
+    /// Connect to a remote endpoint.
     ///
     /// # Behavior
     ///
     /// - **Initiates** a connection to the remote address
     /// - **Waits** for the handshake to complete
-    /// - **Returns** a pair of streams: `(send, recv)`
+    /// - **Returns** a Connection handle
     ///
     /// # Implementation Notes
     ///
-    /// - **Quinn**: Calls `endpoint.connect(addr)` then `connection.open_bi()`
-    /// - **Turmoil**: Calls `TcpStream::connect(addr)` then splits
+    /// - **Quinn**: `endpoint.connect(addr)` and await handshake
+    /// - **Turmoil**: `TcpStream::connect(addr)`
     ///
     /// # Errors
     ///
     /// Returns `std::io::Error` if:
     /// - The remote endpoint is unreachable
-    /// - The handshake fails (TLS, QUIC)
+    /// - The handshake fails
     /// - The connection is refused
-    async fn connect(
-        &self,
-        remote_endpoint: SocketAddr,
-    ) -> io::Result<(Self::SendStream, Self::RecvStream)>;
+    async fn connect(&self, remote: SocketAddr) -> io::Result<Self::Connection>;
 }
 
-/// Extension trait for splitting bidirectional streams.
+/// A connection to a remote peer, supporting multiplexed streams.
 ///
-/// Some transport implementations (like Turmoil's TCP) use a single
-/// bidirectional stream that needs to be "split" into separate read/write
-/// halves. This trait provides that operation.
-pub trait SplittableStream: AsyncRead + AsyncWrite + Unpin + Send + 'static {
-    /// Type of the read half after splitting.
-    type ReadHalf: AsyncRead + Unpin + Send + 'static;
+/// This trait represents a QUIC connection or its simulation equivalent.
+/// Multiple streams can be opened/accepted concurrently over a single
+/// connection.
+#[async_trait]
+pub trait TransportConnection: Send + Sync + 'static {
+    /// Type of stream for sending data.
+    type SendStream: AsyncWrite + Unpin + Send + 'static;
 
-    /// Type of the write half after splitting.
-    type WriteHalf: AsyncWrite + Unpin + Send + 'static;
+    /// Type of stream for receiving data.
+    type RecvStream: AsyncRead + Unpin + Send + 'static;
 
-    /// Splits this stream into separate read and write halves.
+    /// Open a new bidirectional stream.
     ///
-    /// The split halves can be used concurrently (e.g., on different tasks).
-    fn split(self) -> (Self::ReadHalf, Self::WriteHalf);
+    /// # Behavior
+    ///
+    /// - **Creates** a new stream over this connection
+    /// - **Returns** send and receive halves
+    /// - **Cheap**: Stream creation is lightweight (multiplexing)
+    ///
+    /// # Implementation Notes
+    ///
+    /// - **Quinn**: `connection.open_bi()`
+    /// - **Turmoil**: Simulated (returns same underlying TCP, but logically
+    ///   separate)
+    ///
+    /// # Errors
+    ///
+    /// Returns `std::io::Error` if:
+    /// - Connection is closed
+    /// - Peer rejected the stream
+    /// - Flow control limits exceeded
+    async fn open_bi(&self) -> io::Result<(Self::SendStream, Self::RecvStream)>;
+
+    /// Accept an incoming bidirectional stream.
+    ///
+    /// # Behavior
+    ///
+    /// - **Blocks** until peer opens a stream
+    /// - **Returns** send and receive halves
+    /// - **None** if connection is closed
+    ///
+    /// # Implementation Notes
+    ///
+    /// - **Quinn**: `connection.accept_bi()`
+    /// - **Turmoil**: Simulated (waits for peer's open_bi)
+    ///
+    /// # Errors
+    ///
+    /// Returns `std::io::Error` if network errors occur.
+    /// Returns `Ok(None)` if connection is gracefully closed.
+    async fn accept_bi(&self) -> io::Result<Option<(Self::SendStream, Self::RecvStream)>>;
+
+    /// Close the connection immediately with an error code.
+    ///
+    /// # Behavior
+    ///
+    /// - **Terminates** all streams on this connection
+    /// - **Sends** close frame to peer with error code
+    /// - **Non-blocking**: Returns immediately
+    ///
+    /// # Implementation Notes
+    ///
+    /// - **Quinn**: `connection.close(error_code, reason)`
+    /// - **Turmoil**: Closes TCP socket
+    fn close(&self, error_code: u64, reason: &str);
 }

@@ -86,9 +86,14 @@ impl Environment for SimEnv {
     }
 
     fn random_bytes(&self, dest: &mut [u8]) {
-        // Use seeded ChaCha20Rng for deterministic randomness
-        // Note: Turmoil is single-threaded, so this lock will never block
-        self.rng.lock().expect("RNG mutex poisoned").fill_bytes(dest);
+        self.rng
+            .lock()
+            .unwrap_or_else(|e| {
+                // SAFETY: Turmoil is single threaded. Mutex can only be poisoned if another
+                // thread panics while holding the lock.
+                unreachable!("RNG mutex poisoned in single-threaded context: {}", e)
+            })
+            .fill_bytes(dest);
     }
 }
 

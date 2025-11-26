@@ -28,23 +28,6 @@ fn to_box_err<E: std::error::Error + 'static>(e: E) -> Box<dyn std::error::Error
     Box::new(e)
 }
 
-/// Helper to create a valid frame header
-fn create_header(opcode: Opcode) -> FrameHeader {
-    let mut bytes = [0u8; FrameHeader::SIZE];
-
-    // Set magic and version
-    bytes[0..4].copy_from_slice(&FrameHeader::MAGIC.to_be_bytes());
-    bytes[4] = FrameHeader::VERSION;
-
-    let header = FrameHeader::from_bytes(&bytes).expect("valid header").to_owned();
-
-    // Create a mutable copy and set the opcode
-    let mut header_bytes = header.to_bytes();
-    header_bytes[6..8].copy_from_slice(&opcode.to_u16().to_be_bytes());
-
-    FrameHeader::from_bytes(&header_bytes).expect("valid header with opcode").to_owned()
-}
-
 #[test]
 fn ping_pong_with_packet_loss() {
     // TCP will handle retransmissions automatically
@@ -59,7 +42,8 @@ fn ping_pong_with_packet_loss() {
     // Server: respond to Ping with Pong
     sim.host("server", || async move {
         let transport = SimTransport::bind("0.0.0.0:443").await?;
-        let (mut send, mut recv) = transport.accept().await?;
+        let conn = transport.accept().await?;
+        let (mut send, mut recv) = conn.into_split();
 
         // Read frame header (128 bytes)
         let mut header_buf = [0u8; FrameHeader::SIZE];
@@ -74,7 +58,7 @@ fn ping_pong_with_packet_loss() {
         recv.read_exact(&mut payload_buf).await?;
 
         // Create Pong response
-        let pong_header = create_header(Opcode::Pong);
+        let pong_header = FrameHeader::new(Opcode::Pong);
         let pong_frame = Frame::new(pong_header, Vec::new());
 
         // Send response
@@ -88,14 +72,15 @@ fn ping_pong_with_packet_loss() {
     // Client: send Ping, expect Pong
     sim.client("client", async {
         let env = SimEnv::new();
-        let stream = SimTransport::connect_to("server:443").await?;
-        let (mut recv, mut send) = tokio::io::split(stream);
+        let transport = SimTransport::client();
+        let conn = transport.connect_to_host("server:443").await?;
+        let (mut send, mut recv) = conn.into_split();
 
         // Wait a bit (virtual time)
         env.sleep(std::time::Duration::from_millis(10)).await;
 
         // Create Ping frame
-        let ping_header = create_header(Opcode::Ping);
+        let ping_header = FrameHeader::new(Opcode::Ping);
         let ping_frame = Frame::new(ping_header, Vec::new());
 
         // Send Ping
@@ -131,7 +116,8 @@ fn ping_pong_with_latency() {
     // Server: respond to Ping with Pong
     sim.host("server", || async move {
         let transport = SimTransport::bind("0.0.0.0:443").await?;
-        let (mut send, mut recv) = transport.accept().await?;
+        let conn = transport.accept().await?;
+        let (mut send, mut recv) = conn.into_split();
 
         let mut header_buf = [0u8; FrameHeader::SIZE];
         recv.read_exact(&mut header_buf).await?;
@@ -143,7 +129,7 @@ fn ping_pong_with_latency() {
         let mut payload_buf = vec![0u8; payload_size];
         recv.read_exact(&mut payload_buf).await?;
 
-        let pong_header = create_header(Opcode::Pong);
+        let pong_header = FrameHeader::new(Opcode::Pong);
         let pong_frame = Frame::new(pong_header, Vec::new());
 
         let mut response_buf = Vec::new();
@@ -156,13 +142,14 @@ fn ping_pong_with_latency() {
     // Client: measure round-trip time
     sim.client("client", async {
         let env = SimEnv::new();
-        let stream = SimTransport::connect_to("server:443").await?;
-        let (mut recv, mut send) = tokio::io::split(stream);
+        let transport = SimTransport::client();
+        let conn = transport.connect_to_host("server:443").await?;
+        let (mut send, mut recv) = conn.into_split();
 
         let start = env.now();
 
         // Send Ping
-        let ping_header = create_header(Opcode::Ping);
+        let ping_header = FrameHeader::new(Opcode::Ping);
         let ping_frame = Frame::new(ping_header, Vec::new());
 
         let mut ping_buf = Vec::new();

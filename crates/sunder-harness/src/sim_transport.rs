@@ -3,7 +3,8 @@
 use std::{io, net::SocketAddr};
 
 use async_trait::async_trait;
-use sunder_core::transport::Transport;
+use sunder_core::transport::{Transport, TransportConnection};
+use tokio::io::{ReadHalf, WriteHalf};
 use turmoil::net::{TcpListener, TcpStream};
 
 /// Simulation transport using Turmoil's deterministic TCP streams.
@@ -21,12 +22,51 @@ use turmoil::net::{TcpListener, TcpStream};
 /// 1. Quinn doesn't support pluggable time/RNG (would require forking)
 /// 2. Sunder's protocol logic lives *inside* QUIC streams
 /// 3. TCP provides identical stream guarantees for testing protocol correctness
+///
+/// # Architecture
+///
+/// Like Quinn's Endpoint, SimTransport can both accept and initiate
+/// connections:
+/// - Server: `SimTransport::bind("0.0.0.0:443")` creates listener
+/// - Client: `SimTransport::client()` creates unbound endpoint that can connect
 pub struct SimTransport {
-    listener: TcpListener,
+    listener: Option<TcpListener>,
+}
+
+/// A simulated connection over TCP.
+///
+/// This wraps a `TcpStream` and provides QUIC-like semantics for testing.
+///
+/// # Stream Multiplexing Limitation
+///
+/// Unlike QUIC which supports multiple concurrent streams per connection,
+/// TCP provides only one bidirectional byte stream. For testing purposes,
+/// this is sufficient since we test protocol logic, not QUIC multiplexing.
+///
+/// Use `into_split()` to get the underlying stream halves for testing.
+pub struct SimConnection {
+    stream: TcpStream,
+}
+
+impl SimConnection {
+    /// Split the connection into send and receive halves.
+    ///
+    /// This consumes the connection and returns the underlying TCP stream
+    /// halves. This is a convenience method for tests that don't need true
+    /// QUIC semantics.
+    ///
+    /// Returns `(send, recv)` for consistency with test usage patterns.
+    #[must_use]
+    pub fn into_split(self) -> (WriteHalf<TcpStream>, ReadHalf<TcpStream>) {
+        let (recv, send) = tokio::io::split(self.stream);
+        (send, recv)
+    }
 }
 
 impl SimTransport {
-    /// Binds to the specified address for accepting connections.
+    /// Creates a server endpoint bound to the specified address.
+    ///
+    /// This endpoint can accept incoming connections via the Transport trait.
     ///
     /// # Errors
     ///
@@ -35,54 +75,110 @@ impl SimTransport {
     /// - The address format is invalid
     pub async fn bind(address: &str) -> io::Result<Self> {
         let listener = TcpListener::bind(address).await?;
-        Ok(Self { listener })
+        Ok(Self { listener: Some(listener) })
     }
 
-    /// Connects to a remote address.
+    /// Creates a client endpoint that can initiate connections.
     ///
-    /// The caller should use `tokio::io::split()` to separate the stream into
-    /// read and write halves if needed.
+    /// Unlike `bind()`, this doesn't bind to a specific address - it's for
+    /// clients that only need to connect to servers.
     ///
-    /// Returns `io::Result<TcpStream>` — on success returns a connected
-    /// `TcpStream`.
+    /// Use the Transport trait's `connect()` method to establish connections.
+    #[must_use]
+    pub fn client() -> Self {
+        Self { listener: None }
+    }
+
+    /// Helper to connect using Turmoil hostname resolution.
+    ///
+    /// This is a convenience wrapper that accepts hostnames like "server:443"
+    /// and resolves them using Turmoil's internal DNS before calling the
+    /// Transport trait's `connect()` method.
     ///
     /// # Errors
     ///
     /// Returns error if:
-    /// - The remote host is unreachable
+    /// - Hostname resolution fails
     /// - Connection is refused
-    /// - DNS resolution fails
+    /// - The remote host is unreachable
+    pub async fn connect_to_host(&self, address: &str) -> io::Result<SimConnection> {
+        // Turmoil's TcpStream::connect accepts hostname strings directly
+        let stream = TcpStream::connect(address).await?;
+        Ok(SimConnection { stream })
+    }
+
+    /// Legacy helper method - prefer using `Transport::connect()` instead.
+    ///
+    /// This method bypasses the Transport trait abstraction and returns a raw
+    /// TcpStream. Use `SimTransport::client()` and `transport.connect()` for
+    /// trait-based code.
+    ///
+    /// # Deprecated
+    ///
+    /// This method will be removed in a future version.
+    #[deprecated(note = "Use SimTransport::client() and Transport::connect() instead")]
     pub async fn connect_to(address: &str) -> io::Result<TcpStream> {
         TcpStream::connect(address).await
     }
 }
 
-use tokio::io::{ReadHalf, WriteHalf};
-
 #[async_trait]
 impl Transport for SimTransport {
+    type Connection = SimConnection;
+
+    async fn accept(&self) -> io::Result<Self::Connection> {
+        match &self.listener {
+            Some(listener) => {
+                let (stream, _address) = listener.accept().await?;
+                Ok(SimConnection { stream })
+            },
+            None => Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "cannot accept on client endpoint - use SimTransport::bind() for servers",
+            )),
+        }
+    }
+
+    async fn connect(&self, remote: SocketAddr) -> io::Result<Self::Connection> {
+        // Turmoil's TcpStream::connect() accepts SocketAddr directly
+        // For hostname resolution in tests, use turmoil's lookup mechanism
+        let stream = TcpStream::connect(remote).await?;
+        Ok(SimConnection { stream })
+    }
+}
+
+#[async_trait]
+impl TransportConnection for SimConnection {
     type SendStream = WriteHalf<TcpStream>;
     type RecvStream = ReadHalf<TcpStream>;
 
-    async fn accept(&self) -> io::Result<(Self::SendStream, Self::RecvStream)> {
-        let (stream, _address) = self.listener.accept().await?;
-
-        // Split the bidirectional stream into read and write halves
-        let (recv, send) = tokio::io::split(stream);
-
-        Ok((send, recv))
+    async fn open_bi(&self) -> io::Result<(Self::SendStream, Self::RecvStream)> {
+        // In a real QUIC implementation, this would create a new stream over the
+        // connection. For our TCP simulation, we can't do true multiplexing -
+        // the caller will need to handle framing at the protocol layer.
+        //
+        // For now, this is a limitation: only one stream per connection.
+        // This matches our current test usage where we create one connection per test.
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "open_bi not supported in SimConnection - use accept_bi or split the connection at creation time",
+        ))
     }
 
-    async fn connect(
-        &self,
-        address: SocketAddr,
-    ) -> io::Result<(Self::SendStream, Self::RecvStream)> {
-        let stream = TcpStream::connect(address).await?;
+    async fn accept_bi(&self) -> io::Result<Option<(Self::SendStream, Self::RecvStream)>> {
+        // Similar limitation - we can't accept multiple streams on TCP.
+        // The connection is already established; we just need to split it.
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "accept_bi not supported in SimConnection - use split at creation time",
+        ))
+    }
 
-        // Split the bidirectional stream into read and write halves
-        let (recv, send) = tokio::io::split(stream);
-
-        Ok((send, recv))
+    fn close(&self, _error_code: u64, _reason: &str) {
+        // TcpStream doesn't have an explicit close with error code.
+        // Dropping the stream will close the connection.
+        // We can't actually drop self here since we only have &self.
+        // The real close happens when SimConnection is dropped.
     }
 }
 
@@ -99,7 +195,8 @@ mod tests {
         // Server: echo back whatever is received
         sim.host("server", || async {
             let transport = SimTransport::bind("0.0.0.0:443").await?;
-            let (mut send, mut recv) = transport.accept().await?;
+            let conn = transport.accept().await?;
+            let (mut send, mut recv) = conn.into_split();
 
             let mut buf = [0u8; 128];
             let n = recv.read(&mut buf).await?;
@@ -111,8 +208,9 @@ mod tests {
 
         // Client: send message, verify echo
         sim.client("client", async {
-            let stream = SimTransport::connect_to("server:443").await?;
-            let (mut recv, mut send) = tokio::io::split(stream);
+            let transport = SimTransport::client();
+            let conn = transport.connect_to_host("server:443").await?;
+            let (mut send, mut recv) = conn.into_split();
 
             let message = b"Hello, Sunder!";
             send.write_all(message).await?;
@@ -135,7 +233,8 @@ mod tests {
         // Server: send "pong" when receiving "ping"
         sim.host("server", || async {
             let transport = SimTransport::bind("0.0.0.0:443").await?;
-            let (mut send, mut recv) = transport.accept().await?;
+            let conn = transport.accept().await?;
+            let (mut send, mut recv) = conn.into_split();
 
             let mut buf = [0u8; 4];
             recv.read_exact(&mut buf).await?;
@@ -148,8 +247,9 @@ mod tests {
 
         // Client: send "ping", expect "pong"
         sim.client("client", async {
-            let stream = SimTransport::connect_to("server:443").await?;
-            let (mut recv, mut send) = tokio::io::split(stream);
+            let transport = SimTransport::client();
+            let conn = transport.connect_to_host("server:443").await?;
+            let (mut send, mut recv) = conn.into_split();
 
             send.write_all(b"ping").await?;
 
