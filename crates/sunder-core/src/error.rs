@@ -89,6 +89,20 @@ impl fmt::Display for ConnectionError {
 
 impl std::error::Error for ConnectionError {}
 
+impl ConnectionError {
+    /// Returns true if this error is transient and may succeed on retry.
+    ///
+    /// Transient errors are typically timeouts or temporary network issues.
+    /// Protocol violations (invalid frames, unsupported versions) are never
+    /// transient - they indicate a broken or malicious peer.
+    pub fn is_transient(&self) -> bool {
+        matches!(
+            self,
+            ConnectionError::HandshakeTimeout { .. } | ConnectionError::IdleTimeout { .. }
+        )
+    }
+}
+
 /// Convert ConnectionError to io::Error for compatibility with async I/O APIs.
 ///
 /// This is only for boundary conversion - internally we use ConnectionError.
@@ -120,5 +134,45 @@ impl From<sunder_proto::ProtocolError> for ConnectionError {
 impl From<io::Error> for ConnectionError {
     fn from(err: io::Error) -> Self {
         ConnectionError::Transport(err.to_string())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn timeout_errors_are_transient() {
+        assert!(
+            ConnectionError::HandshakeTimeout { elapsed: Duration::from_secs(31) }.is_transient()
+        );
+
+        assert!(ConnectionError::IdleTimeout { elapsed: Duration::from_secs(61) }.is_transient());
+    }
+
+    #[test]
+    fn protocol_violations_are_fatal() {
+        assert!(
+            !ConnectionError::InvalidState {
+                state: ConnectionState::Init,
+                operation: "send_ping".to_string(),
+            }
+            .is_transient()
+        );
+
+        assert!(
+            !ConnectionError::UnexpectedFrame { state: ConnectionState::Init, opcode: 0x03 }
+                .is_transient()
+        );
+
+        assert!(!ConnectionError::UnsupportedVersion(99).is_transient());
+
+        assert!(
+            !ConnectionError::InvalidPayload { expected: "Hello", opcode: 0x01 }.is_transient()
+        );
+
+        assert!(!ConnectionError::Protocol("test error".to_string()).is_transient());
+
+        assert!(!ConnectionError::Transport("network error".to_string()).is_transient());
     }
 }
