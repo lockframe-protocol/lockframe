@@ -73,7 +73,7 @@ fn ping_pong_basic() {
 
     // Client: send Ping, expect Pong
     sim.client("client", async {
-        let env = SimEnv;
+        let env = SimEnv::new();
         let stream = SimTransport::connect_to("server:443").await?;
         let (mut recv, mut send) = tokio::io::split(stream);
 

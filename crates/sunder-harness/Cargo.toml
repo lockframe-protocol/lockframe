@@ -13,13 +13,14 @@ sunder-proto = { path = "../sunder-proto" }
 async-trait = "0.1"
 
 # Deterministic simulation
-turmoil = "0.6"
+turmoil = "0.7.0"
 
 # Async runtime (minimal features, turmoil provides the runtime)
 tokio = { version = "1", default-features = false, features = ["io-util", "macros", "time"] }
 
 # Seeded RNG for determinism
 rand = "0.8"
+rand_chacha = "0.3"
 
 [dev-dependencies]
 # For test assertions

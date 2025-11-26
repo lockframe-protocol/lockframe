@@ -43,5 +43,7 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
+pub mod connection;
 pub mod env;
+pub mod error;
 pub mod transport;

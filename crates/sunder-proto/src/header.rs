@@ -93,6 +93,22 @@ impl FrameHeader {
     /// Maximum payload size (16 MB)
     pub const MAX_PAYLOAD_SIZE: u32 = 16 * 1024 * 1024;
 
+    /// Create a new header with the specified opcode.
+    #[must_use]
+    pub fn new(opcode: Opcode) -> Self {
+        let mut bytes = [0u8; Self::SIZE];
+        bytes[0..4].copy_from_slice(&Self::MAGIC.to_be_bytes());
+        bytes[4] = Self::VERSION;
+        bytes[6..8].copy_from_slice(&opcode.to_u16().to_be_bytes());
+
+        // SAFETY: We just constructed valid bytes with correct magic and version.
+        // from_bytes will validate these and return a valid header.
+        Self::from_bytes(&bytes)
+            .ok()
+            .unwrap_or_else(|| unreachable!("constructed valid header with correct magic/version"))
+            .to_owned()
+    }
+
     /// Parse header from network bytes (zero-copy, safe)
     ///
     /// This function casts raw bytes directly to a `FrameHeader` reference

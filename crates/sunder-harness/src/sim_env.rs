@@ -1,8 +1,12 @@
 //! Turmoil-based Environment implementation for deterministic testing.
 
-use std::time::Duration;
+use std::{
+    sync::{Arc, Mutex},
+    time::Duration,
+};
 
-use rand::RngCore;
+use rand::{RngCore, SeedableRng};
+use rand_chacha::ChaCha20Rng;
 use sunder_core::env::Environment;
 
 /// Simulation environment using Turmoil's virtual time and seeded RNG.
@@ -12,20 +16,62 @@ use sunder_core::env::Environment;
 /// - **Virtual Time**: `now()` returns Turmoil's simulated time, which can be
 ///   advanced instantly via `turmoil::sleep()`.
 ///
-/// - **Seeded RNG**: `random_bytes()` uses Turmoil's deterministic RNG,
-///   ensuring reproducible test runs with the same seed.
+/// - **Seeded RNG**: `random_bytes()` uses ChaCha20Rng seeded with a fixed
+///   value, ensuring reproducible test runs.
+///
+/// # Determinism
+///
+/// The RNG is seeded with a fixed value (0) by default. This ensures that:
+/// - Test runs are reproducible
+/// - Debugging is easier (same sequence every time)
+/// - CI/CD catches regressions reliably
+///
+/// For testing different scenarios, create SimEnv with different seeds:
+/// ```ignore
+/// let env = SimEnv::with_seed(12345);
+/// ```
 ///
 /// # Usage
 ///
 /// `SimEnv` must be used inside a Turmoil simulation context (created by
-/// `turmoil::Builder`). Using it outside will panic.
+/// `turmoil::Builder`). Using it outside will panic for time operations.
 ///
 /// # Panics
 ///
-/// - `random_bytes()` panics if called outside a Turmoil simulation
 /// - `now()` panics if called outside a Turmoil simulation
-#[derive(Clone, Copy, Debug)]
-pub struct SimEnv;
+#[derive(Clone)]
+pub struct SimEnv {
+    /// Seeded RNG for deterministic random bytes
+    ///
+    /// Wrapped in Arc<Mutex<>> to allow Clone while maintaining shared state
+    /// across clones (important for proper RNG sequence).
+    /// Note: Turmoil is single-threaded, so this Mutex will never block.
+    rng: Arc<Mutex<ChaCha20Rng>>,
+}
+
+impl SimEnv {
+    /// Create a new SimEnv with default seed (0)
+    ///
+    /// Use this for most tests where determinism is important but the specific
+    /// seed doesn't matter.
+    pub fn new() -> Self {
+        Self::with_seed(0)
+    }
+
+    /// Create a new SimEnv with a specific seed
+    ///
+    /// Use this when you want to test different random scenarios while
+    /// maintaining reproducibility.
+    pub fn with_seed(seed: u64) -> Self {
+        Self { rng: Arc::new(Mutex::new(ChaCha20Rng::seed_from_u64(seed))) }
+    }
+}
+
+impl Default for SimEnv {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl Environment for SimEnv {
     type Instant = std::time::Instant;
@@ -40,9 +86,9 @@ impl Environment for SimEnv {
     }
 
     fn random_bytes(&self, dest: &mut [u8]) {
-        // Use rand with thread_rng.
-        // In kurmoil context, this will be seede deterministically
-        rand::thread_rng().fill_bytes(dest);
+        // Use seeded ChaCha20Rng for deterministic randomness
+        // Note: Turmoil is single-threaded, so this lock will never block
+        self.rng.lock().expect("RNG mutex poisoned").fill_bytes(dest);
     }
 }
 
@@ -55,7 +101,7 @@ mod tests {
         let mut sim = turmoil::Builder::new().build();
 
         sim.client("test", async {
-            let env = SimEnv;
+            let env = SimEnv::new();
 
             let start = env.now();
             env.sleep(Duration::from_secs(5)).await;
@@ -70,26 +116,52 @@ mod tests {
     }
 
     #[test]
-    fn sim_env_rng_works() {
-        let mut sim = turmoil::Builder::new().build();
+    fn sim_env_rng_is_deterministic() {
+        // Run the same test twice with same seed, verify same output
+        let run_test = |seed: u64| -> Vec<u8> {
+            let env = SimEnv::with_seed(seed);
+            let mut bytes = vec![0u8; 64];
+            env.random_bytes(&mut bytes);
+            bytes
+        };
 
-        sim.client("test", async {
-            let env = SimEnv;
+        let bytes1 = run_test(12345);
+        let bytes2 = run_test(12345);
 
-            // Verify we can generate random bytes without panicking
-            let mut bytes1 = [0u8; 32];
-            let mut bytes2 = [0u8; 32];
+        // Same seed -> same bytes
+        assert_eq!(bytes1, bytes2, "RNG with same seed should produce same output");
 
-            env.random_bytes(&mut bytes1);
-            env.random_bytes(&mut bytes2);
+        let bytes3 = run_test(54321);
+        // Different seed -> different bytes
+        assert_ne!(bytes1, bytes3, "RNG with different seed should produce different output");
+    }
 
-            // Different calls should produce different bytes
-            // (with overwhelming probability)
-            assert_ne!(&bytes1[..], &bytes2[..]);
+    #[test]
+    fn sim_env_rng_different_calls_different_output() {
+        let env = SimEnv::new();
 
-            Ok(())
-        });
+        let mut bytes1 = [0u8; 32];
+        let mut bytes2 = [0u8; 32];
 
-        sim.run().expect("simulation failed");
+        env.random_bytes(&mut bytes1);
+        env.random_bytes(&mut bytes2);
+
+        // Sequential calls should produce different bytes
+        assert_ne!(&bytes1[..], &bytes2[..]);
+    }
+
+    #[test]
+    fn sim_env_clones_share_rng_state() {
+        let env1 = SimEnv::with_seed(999);
+        let env2 = env1.clone();
+
+        let mut bytes1 = [0u8; 32];
+        let mut bytes2 = [0u8; 32];
+
+        env1.random_bytes(&mut bytes1);
+        env2.random_bytes(&mut bytes2);
+
+        // Clones share RNG state, so sequential calls produce different bytes
+        assert_ne!(&bytes1[..], &bytes2[..]);
     }
 }
