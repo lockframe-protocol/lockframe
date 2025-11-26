@@ -28,10 +28,6 @@ pub struct SimTransport {
 impl SimTransport {
     /// Binds to the specified address for accepting connections.
     ///
-    /// # Parameters
-    ///
-    /// - `addr`: Address to bind to (e.g., `"0.0.0.0:443"`)
-    ///
     /// # Errors
     ///
     /// Returns error if:
@@ -69,7 +65,7 @@ impl Transport for SimTransport {
     type RecvStream = ReadHalf<TcpStream>;
 
     async fn accept(&self) -> io::Result<(Self::SendStream, Self::RecvStream)> {
-        let (stream, _addr) = self.listener.accept().await?;
+        let (stream, _address) = self.listener.accept().await?;
 
         // Split the bidirectional stream into read and write halves
         let (recv, send) = tokio::io::split(stream);
@@ -77,8 +73,11 @@ impl Transport for SimTransport {
         Ok((send, recv))
     }
 
-    async fn connect(&self, addr: SocketAddr) -> io::Result<(Self::SendStream, Self::RecvStream)> {
-        let stream = TcpStream::connect(addr).await?;
+    async fn connect(
+        &self,
+        address: SocketAddr,
+    ) -> io::Result<(Self::SendStream, Self::RecvStream)> {
+        let stream = TcpStream::connect(address).await?;
 
         // Split the bidirectional stream into read and write halves
         let (recv, send) = tokio::io::split(stream);
