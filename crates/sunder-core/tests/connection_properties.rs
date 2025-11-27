@@ -34,7 +34,6 @@ fn session_id_strategy() -> impl Strategy<Value = u64> {
     any::<u64>()
 }
 
-/// Property: send_hello() only succeeds from Init state
 #[test]
 fn prop_send_hello_only_from_init() {
     proptest!(|(config in config_strategy())| {
@@ -52,7 +51,6 @@ fn prop_send_hello_only_from_init() {
     });
 }
 
-/// Property: State never goes backwards (except to Closed)
 #[test]
 fn prop_state_never_goes_backward() {
     proptest!(|(config in config_strategy(), session_id in session_id_strategy())| {
@@ -83,7 +81,31 @@ fn prop_state_never_goes_backward() {
     });
 }
 
-/// Property: Timeout always closes connection
+#[test]
+fn handshake_timeout_no_response() {
+    let now = Instant::now();
+    let config = ConnectionConfig::default(); // 30s handshake timeout
+    let mut client = Connection::new(now, config);
+
+    // Client sends Hello
+    let actions = client.send_hello(now).expect("send_hello should succeed");
+    assert_eq!(client.state(), ConnectionState::Pending);
+    assert_eq!(actions.len(), 1);
+    assert!(matches!(actions[0], ConnectionAction::SendFrame(_)));
+
+    // Server never responds - time advances past handshake timeout
+    let future = now + Duration::from_secs(31);
+    let actions = client.tick(future);
+
+    // Client should timeout and close
+    assert_eq!(client.state(), ConnectionState::Closed);
+    assert!(!actions.is_empty());
+    assert!(
+        actions.iter().any(|a| matches!(a, ConnectionAction::Close { .. })),
+        "Expected Close action after handshake timeout"
+    );
+}
+
 #[test]
 fn prop_timeout_always_closes() {
     proptest!(|(config in config_strategy())| {
@@ -103,7 +125,6 @@ fn prop_timeout_always_closes() {
     });
 }
 
-/// Property: Idle timeout only occurs in Authenticated state
 #[test]
 fn prop_idle_timeout_only_authenticated() {
     proptest!(|(
@@ -145,7 +166,6 @@ fn prop_idle_timeout_only_authenticated() {
     });
 }
 
-/// Property: Heartbeats only sent when Authenticated
 #[test]
 fn prop_heartbeats_only_authenticated() {
     proptest!(|(
@@ -204,7 +224,6 @@ fn prop_heartbeats_only_authenticated() {
     });
 }
 
-/// Property: Session ID never changes once set
 #[test]
 fn prop_session_id_immutable() {
     proptest!(|(
@@ -245,7 +264,6 @@ fn prop_session_id_immutable() {
     });
 }
 
-/// Property: Activity updates reset timeout
 #[test]
 fn prop_activity_resets_timeout() {
     proptest!(|(
@@ -284,7 +302,6 @@ fn prop_activity_resets_timeout() {
     });
 }
 
-/// Property: Error classification is consistent
 #[test]
 fn prop_error_classification_consistent() {
     proptest!(|(elapsed in 1u64..=1000)| {

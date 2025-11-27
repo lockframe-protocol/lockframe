@@ -1,32 +1,17 @@
 //! Scenario tests for timeout behavior.
 //!
-//! These tests verify that connections properly handle handshake and idle
-//! timeouts using the scenario framework's time advancement feature.
+//! These tests verify that connections properly handle idle timeouts
+//! and heartbeat behavior using the scenario framework's time advancement
+//! feature.
+//!
+//! Note: Handshake timeout is tested at the unit level via property tests
+//! in `connection_properties.rs` since it doesn't require client-server
+//! interaction.
 
 use std::time::Duration;
 
 use sunder_core::connection::ConnectionState;
 use sunder_harness::scenario::Scenario;
-
-#[test]
-fn scenario_handshake_timeout() {
-    // Advance time past handshake timeout (30s) without completing handshake
-    let result = Scenario::new()
-        .with_time_advance(Duration::from_secs(31))
-        .oracle(Box::new(|world| {
-            // Client should timeout during handshake
-            // Note: Currently handshake auto-completes in scenario.run()
-            // This test will need handshake-skipping variant to test properly
-            // For now, verify both are authenticated (handshake completed before timeout)
-            assert_eq!(world.client().state(), ConnectionState::Authenticated);
-            assert_eq!(world.server().state(), ConnectionState::Authenticated);
-
-            Ok(())
-        }))
-        .run();
-
-    assert!(result.is_ok());
-}
 
 #[test]
 fn scenario_idle_timeout() {
