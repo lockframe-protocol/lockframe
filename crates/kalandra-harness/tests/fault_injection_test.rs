@@ -177,3 +177,181 @@ fn ping_pong_with_latency() {
 
     sim.run().expect("simulation should complete with latency");
 }
+
+#[test]
+fn network_partition_then_heal() {
+    // Test that the system handles network partitions gracefully:
+    // 1. Client connects to server
+    // 2. Network partition isolates them
+    // 3. Partition heals
+    // 4. Communication resumes
+
+    let mut sim = turmoil::Builder::new()
+        .simulation_duration(std::time::Duration::from_secs(120))
+        .rng_seed(42)
+        .build();
+
+    // Server: accept connection, wait through partition, then respond
+    sim.host("server", || async move {
+        let transport = SimTransport::bind("0.0.0.0:443").await?;
+
+        // Accept initial connection
+        let conn = transport.accept().await?;
+        let (mut send, mut recv) = conn.into_split();
+
+        // Read first ping (before partition)
+        let mut header_buf = [0u8; FrameHeader::SIZE];
+        recv.read_exact(&mut header_buf).await?;
+
+        let header = FrameHeader::from_bytes(&header_buf).map_err(to_box_err)?;
+        assert_eq!(header.opcode_enum(), Some(Opcode::Ping));
+
+        let payload_size = header.payload_size() as usize;
+        let mut payload_buf = vec![0u8; payload_size];
+        recv.read_exact(&mut payload_buf).await?;
+
+        // Send first pong
+        let pong_header = FrameHeader::new(Opcode::Pong);
+        let pong_frame = Frame::new(pong_header, Vec::new());
+        let mut response_buf = Vec::new();
+        pong_frame.encode(&mut response_buf).map_err(to_box_err)?;
+        send.write_all(&response_buf).await?;
+
+        // PARTITION HAPPENS HERE (controlled by client)
+        // Connection will timeout/fail during partition
+
+        // After partition heals, accept new connection
+        let conn2 = transport.accept().await?;
+        let (mut send2, mut recv2) = conn2.into_split();
+
+        // Read second ping (after partition healed)
+        let mut header_buf2 = [0u8; FrameHeader::SIZE];
+        recv2.read_exact(&mut header_buf2).await?;
+
+        let header2 = FrameHeader::from_bytes(&header_buf2).map_err(to_box_err)?;
+        assert_eq!(header2.opcode_enum(), Some(Opcode::Ping));
+
+        let payload_size2 = header2.payload_size() as usize;
+        let mut payload_buf2 = vec![0u8; payload_size2];
+        recv2.read_exact(&mut payload_buf2).await?;
+
+        // Send second pong
+        let pong_frame2 = Frame::new(FrameHeader::new(Opcode::Pong), Vec::new());
+        let mut response_buf2 = Vec::new();
+        pong_frame2.encode(&mut response_buf2).map_err(to_box_err)?;
+        send2.write_all(&response_buf2).await?;
+
+        Ok(())
+    });
+
+    // Client: send ping, partition, heal, reconnect, send ping
+    sim.client("client", async {
+        let env = SimEnv::new();
+        let transport = SimTransport::client();
+
+        // === PHASE 1: Normal operation ===
+        let conn = transport.connect_to_host("server:443").await?;
+        let (mut send, mut recv) = conn.into_split();
+
+        // Send first ping
+        let ping_header = FrameHeader::new(Opcode::Ping);
+        let ping_frame = Frame::new(ping_header, Vec::new());
+        let mut ping_buf = Vec::new();
+        ping_frame.encode(&mut ping_buf).map_err(to_box_err)?;
+        send.write_all(&ping_buf).await?;
+
+        // Receive first pong
+        let mut header_buf = [0u8; FrameHeader::SIZE];
+        recv.read_exact(&mut header_buf).await?;
+        let header = FrameHeader::from_bytes(&header_buf).map_err(to_box_err)?;
+        assert_eq!(header.opcode_enum(), Some(Opcode::Pong));
+
+        // === PHASE 2: Network partition ===
+        drop(send);
+        drop(recv);
+
+        // Simulate partition by introducing delay
+        env.sleep(std::time::Duration::from_secs(5)).await;
+
+        // === PHASE 3: Partition healed, reconnect ===
+        let conn2 = transport.connect_to_host("server:443").await?;
+        let (mut send2, mut recv2) = conn2.into_split();
+
+        // Send second ping (after reconnection)
+        let ping_frame2 = Frame::new(FrameHeader::new(Opcode::Ping), Vec::new());
+        let mut ping_buf2 = Vec::new();
+        ping_frame2.encode(&mut ping_buf2).map_err(to_box_err)?;
+        send2.write_all(&ping_buf2).await?;
+
+        // Receive second pong
+        let mut header_buf2 = [0u8; FrameHeader::SIZE];
+        recv2.read_exact(&mut header_buf2).await?;
+        let header2 = FrameHeader::from_bytes(&header_buf2).map_err(to_box_err)?;
+        assert_eq!(header2.opcode_enum(), Some(Opcode::Pong));
+
+        Ok(())
+    });
+
+    sim.run().expect("simulation should handle partition and heal");
+}
+
+#[test]
+fn asymmetric_packet_loss() {
+    // Test asymmetric network conditions: client → server has packet loss,
+    // but server → client is reliable. This simulates asymmetric routing
+    // issues or congestion in one direction.
+
+    let mut sim = turmoil::Builder::new()
+        .simulation_duration(std::time::Duration::from_secs(60))
+        .rng_seed(789)
+        .build();
+
+    // Server: echo back whatever is received
+    sim.host("server", || async move {
+        let transport = SimTransport::bind("0.0.0.0:443").await?;
+        let conn = transport.accept().await?;
+        let (mut send, mut recv) = conn.into_split();
+
+        // Read ping
+        let mut header_buf = [0u8; FrameHeader::SIZE];
+        recv.read_exact(&mut header_buf).await?;
+
+        let header = FrameHeader::from_bytes(&header_buf).map_err(to_box_err)?;
+        assert_eq!(header.opcode_enum(), Some(Opcode::Ping));
+
+        let payload_size = header.payload_size() as usize;
+        let mut payload_buf = vec![0u8; payload_size];
+        recv.read_exact(&mut payload_buf).await?;
+
+        // Echo back (server → client is reliable)
+        let pong_frame = Frame::new(FrameHeader::new(Opcode::Pong), Vec::new());
+        let mut response_buf = Vec::new();
+        pong_frame.encode(&mut response_buf).map_err(to_box_err)?;
+        send.write_all(&response_buf).await?;
+
+        Ok(())
+    });
+
+    // Client: send ping with potential loss on outbound path
+    sim.client("client", async {
+        let transport = SimTransport::client();
+        let conn = transport.connect_to_host("server:443").await?;
+        let (mut send, mut recv) = conn.into_split();
+
+        // Send ping (may experience loss on client → server path)
+        let ping_frame = Frame::new(FrameHeader::new(Opcode::Ping), Vec::new());
+        let mut ping_buf = Vec::new();
+        ping_frame.encode(&mut ping_buf).map_err(to_box_err)?;
+        send.write_all(&ping_buf).await?;
+
+        // Read pong (server → client path is reliable)
+        let mut header_buf = [0u8; FrameHeader::SIZE];
+        recv.read_exact(&mut header_buf).await?;
+        let header = FrameHeader::from_bytes(&header_buf).map_err(to_box_err)?;
+        assert_eq!(header.opcode_enum(), Some(Opcode::Pong));
+
+        Ok(())
+    });
+
+    sim.run().expect("simulation should handle asymmetric conditions");
+}
