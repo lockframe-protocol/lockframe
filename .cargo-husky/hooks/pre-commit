@@ -26,7 +26,7 @@ cargo clippy --all-targets --all-features -- -D warnings || {
 
 # Run fast unit tests
 echo "Running unit tests..."
-cargo test --lib --workspace || {
+cargo nextest run --workspace || {
     echo "FAILURE: Unit tests failed. Fix them before committing."
     exit 1
 }

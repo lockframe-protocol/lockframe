@@ -19,8 +19,8 @@ const CHAIN_LABEL: &[u8] = b"chain";
 /// Label for deriving a message key
 const MESSAGE_LABEL: &[u8] = b"message";
 
-/// Maximum number of generations to skip when catching up
-/// This limits the work done when receiving out-of-order messages
+/// Maximum number of generations to skip when catching up.
+/// This limits the work done when receiving out-of-order messages.
 const MAX_SKIP: u32 = 1000;
 
 /// A message key derived from the ratchet.
@@ -58,7 +58,7 @@ impl Drop for MessageKey {
 /// Forward-secure symmetric ratchet.
 ///
 /// Derives a sequence of message keys from an initial seed.
-/// Each `advance()` call:
+/// Each [`advance()`](Self::advance) call:
 /// 1. Derives a message key from the current chain key
 /// 2. Derives the next chain key
 /// 3. Overwrites the old chain key (forward secrecy)
@@ -71,7 +71,7 @@ impl Drop for MessageKey {
 pub struct SymmetricRatchet {
     /// Current chain key (32 bytes)
     chain_key: [u8; 32],
-    /// Current generation (number of advance() calls)
+    /// Current generation (number of `advance()` calls)
     generation: u32,
 }
 
@@ -102,7 +102,7 @@ impl SymmetricRatchet {
     ///
     /// # Errors
     ///
-    /// Returns `GenerationOverflow` if generation would exceed u32::MAX.
+    /// Returns `GenerationOverflow` if generation would exceed `u32::MAX`.
     pub fn advance(&mut self) -> Result<MessageKey, SenderKeyError> {
         if self.generation == u32::MAX {
             return Err(SenderKeyError::GenerationOverflow { current: self.generation });
@@ -111,12 +111,12 @@ impl SymmetricRatchet {
         let message_key = self.derive_message_key();
         let next_chain_key = self.derive_next_chain_key();
 
-        // Zeroize and replace the old chain key (forward secrecy)
+        // Zeroize and replace the old chain key for forward secrecy
         self.chain_key.iter_mut().for_each(|b| *b = 0);
         self.chain_key = next_chain_key;
 
         let current_gen = self.generation;
-        self.generation += 1;
+        self.generation = self.generation.wrapping_add(1);
 
         Ok(MessageKey { key: message_key, generation: current_gen })
     }
@@ -128,7 +128,7 @@ impl SymmetricRatchet {
     ///
     /// # Errors
     ///
-    /// - `RatchetTooFarBehind` if target is more than MAX_SKIP generations
+    /// - `RatchetTooFarBehind` if target is more than `MAX_SKIP` generations
     ///   ahead
     /// - `RatchetTooFarBehind` if target is behind current generation (can't go
     ///   back)
@@ -140,7 +140,8 @@ impl SymmetricRatchet {
             });
         }
 
-        let skip_count = target - self.generation;
+        // We verified target >= self.generation above, so this won't underflow
+        let skip_count = target.wrapping_sub(self.generation);
         if skip_count > MAX_SKIP {
             return Err(SenderKeyError::RatchetTooFarBehind {
                 current: self.generation,
@@ -165,8 +166,9 @@ impl SymmetricRatchet {
 
     /// Derive the message key from the current chain key.
     fn derive_message_key(&self) -> [u8; 32] {
-        let mut mac =
-            HmacSha256::new_from_slice(&self.chain_key).expect("HMAC accepts any key size");
+        let Ok(mut mac) = HmacSha256::new_from_slice(&self.chain_key) else {
+            unreachable!("HMAC-SHA256 accepts any key size");
+        };
         mac.update(MESSAGE_LABEL);
         let result = mac.finalize().into_bytes();
 
@@ -177,8 +179,9 @@ impl SymmetricRatchet {
 
     /// Derive the next chain key from the current chain key.
     fn derive_next_chain_key(&self) -> [u8; 32] {
-        let mut mac =
-            HmacSha256::new_from_slice(&self.chain_key).expect("HMAC accepts any key size");
+        let Ok(mut mac) = HmacSha256::new_from_slice(&self.chain_key) else {
+            unreachable!("HMAC-SHA256 accepts any key size");
+        };
         mac.update(CHAIN_LABEL);
         let result = mac.finalize().into_bytes();
 
@@ -188,14 +191,15 @@ impl SymmetricRatchet {
     }
 }
 
-// Implement Drop to zeroize chain key
 impl Drop for SymmetricRatchet {
     fn drop(&mut self) {
+        // Zeroize chain key
         self.chain_key.iter_mut().for_each(|b| *b = 0);
     }
 }
 
 #[cfg(test)]
+#[allow(clippy::panic, clippy::unwrap_used, clippy::cast_possible_truncation)]
 mod tests {
     use super::*;
 

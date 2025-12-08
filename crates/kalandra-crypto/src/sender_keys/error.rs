@@ -63,14 +63,14 @@ impl SenderKeyError {
     pub fn is_fatal(&self) -> bool {
         match self {
             // Protocol violations - fatal
-            Self::DecryptionFailed { .. } => true,
-            Self::InvalidKeyLength { .. } => true,
-            Self::GenerationOverflow { .. } => true,
+            Self::DecryptionFailed { .. }
+            | Self::InvalidKeyLength { .. }
+            | Self::GenerationOverflow { .. } => true,
 
             // Potentially recoverable - need state sync
-            Self::UnknownSender { .. } => false,
-            Self::RatchetTooFarBehind { .. } => false,
-            Self::EpochMismatch { .. } => false,
+            Self::UnknownSender { .. }
+            | Self::RatchetTooFarBehind { .. }
+            | Self::EpochMismatch { .. } => false,
         }
     }
 }

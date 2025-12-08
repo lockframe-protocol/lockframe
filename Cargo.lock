@@ -725,11 +725,8 @@ dependencies = [
  "async-trait",
  "bincode",
  "bytes",
- "chacha20poly1305",
  "ciborium",
  "hex",
- "hkdf",
- "hmac",
  "insta",
  "kalandra-proto",
  "openmls",
@@ -740,10 +737,21 @@ dependencies = [
  "proptest",
  "rand 0.8.5",
  "serde",
- "sha2",
  "thiserror",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "kalandra-crypto"
+version = "0.1.0"
+dependencies = [
+ "chacha20poly1305",
+ "hkdf",
+ "hmac",
+ "proptest",
+ "sha2",
+ "thiserror",
 ]
 
 [[package]]

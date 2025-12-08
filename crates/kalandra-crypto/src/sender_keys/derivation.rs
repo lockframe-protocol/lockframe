@@ -8,8 +8,8 @@ const SENDER_KEY_LABEL: &[u8] = b"kalandraSenderV1";
 
 /// Derive a sender key seed from the MLS epoch secret.
 ///
-/// This produces a 32-byte seed that is unique per (epoch, sender_index) pair.
-/// The seed is used to initialize a `SymmetricRatchet` for that sender.
+/// This produces a 32-byte seed that is unique per (epoch, `sender_index`)
+/// pair. The seed is used to initialize a [`SymmetricRatchet`] for that sender.
 ///
 /// # Security
 ///
@@ -23,14 +23,16 @@ pub fn derive_sender_key_seed(epoch_secret: &[u8], epoch: u64, sender_index: u32
     let hkdf = Hkdf::<Sha256>::new(None, epoch_secret);
 
     // Build the info parameter: label || epoch || sender_index
-    let mut info = Vec::with_capacity(SENDER_KEY_LABEL.len() + 8 + 4);
+    // Capacity: 16 (label) + 8 (epoch) + 4 (sender_index) = 28
+    let mut info = Vec::with_capacity(28);
     info.extend_from_slice(SENDER_KEY_LABEL);
     info.extend_from_slice(&epoch.to_be_bytes());
     info.extend_from_slice(&sender_index.to_be_bytes());
 
-    // Expand to 32 bytes
     let mut seed = [0u8; 32];
-    hkdf.expand(&info, &mut seed).expect("32 bytes is a valid HKDF output length");
+    let Ok(()) = hkdf.expand(&info, &mut seed) else {
+        unreachable!("32 bytes is a valid HKDF-SHA256 output length");
+    };
 
     seed
 }
@@ -40,7 +42,7 @@ pub fn derive_sender_key_seed(epoch_secret: &[u8], epoch: u64, sender_index: u32
 /// Convenience function for initializing sender keys for all room members
 /// at once (e.g., after joining a room or epoch transition).
 ///
-/// Returns vector of (sender_index, seed) pairs.
+/// Returns vector of (`sender_index`, seed) pairs.
 pub fn derive_all_sender_seeds(
     epoch_secret: &[u8],
     epoch: u64,
@@ -53,6 +55,7 @@ pub fn derive_all_sender_seeds(
 }
 
 #[cfg(test)]
+#[allow(clippy::indexing_slicing, clippy::uninlined_format_args)]
 mod tests {
     use super::*;
 

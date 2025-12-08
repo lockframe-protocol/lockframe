@@ -38,6 +38,6 @@ pub mod error;
 pub mod ratchet;
 
 pub use derivation::derive_sender_key_seed;
-pub use encryption::{EncryptedMessage, decrypt_message, encrypt_message};
+pub use encryption::{EncryptedMessage, NONCE_RANDOM_SIZE, decrypt_message, encrypt_message};
 pub use error::SenderKeyError;
 pub use ratchet::{MessageKey, SymmetricRatchet};

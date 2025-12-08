@@ -13,7 +13,7 @@
 //!      │ kalandra-core              │
 //!      │ - State machines           │
 //!      │ - Protocol logic           │
-//!      │ - Cryptographic operations │
+//!      │ - Server-side validation   │
 //!      └────────────────────────────┘
 //!         ↓                      ↓
 //! ┌──────────────────┐  ┌─────────────────┐
@@ -42,7 +42,6 @@
 //! - [`env`]: Environment abstraction (time, RNG)
 //! - [`transport`]: Transport abstraction (streams)
 //! - [`error`]: Connection error types
-//! - [`sender_keys`]: Data Plane encryption (sender keys, symmetric ratchet)
 
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
@@ -52,7 +51,6 @@ pub mod env;
 pub mod error;
 pub mod mls;
 pub mod room_manager;
-pub mod sender_keys;
 pub mod sequencer;
 pub mod storage;
 pub mod transport;

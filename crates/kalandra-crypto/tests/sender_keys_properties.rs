@@ -2,51 +2,19 @@
 //!
 //! These tests verify the fundamental invariants of the sender keys system:
 //!
-//! 1. **Round-trip**: decrypt(encrypt(m)) == m for all messages
-//! 2. **Key uniqueness**: Different ratchet generations produce different keys
-//! 3. **Determinism**: Same inputs always produce same outputs
-//! 4. **Isolation**: Different senders/epochs produce different keys
+//! 1. Round-trip: decrypt(encrypt(m)) == m for all messages
+//! 2. Key uniqueness: Different ratchet generations produce different keys
+//! 3. Determinism: Same inputs always produce same outputs
+//! 4. Isolation: Different senders/epochs produce different keys
 
-use std::time::Duration;
+#![allow(clippy::unwrap_used, clippy::indexing_slicing, clippy::arithmetic_side_effects)]
 
-use kalandra_core::{
-    env::Environment,
-    sender_keys::{
-        MessageKey, SymmetricRatchet, decrypt_message, derive_sender_key_seed, encrypt_message,
-    },
+use kalandra_crypto::{
+    MessageKey, NONCE_RANDOM_SIZE, SymmetricRatchet, decrypt_message, derive_sender_key_seed,
+    encrypt_message,
 };
 use proptest::prelude::*;
 
-// Test environment with configurable randomness
-// Uses AtomicUsize for thread-safe index tracking
-#[derive(Clone)]
-struct TestEnv {
-    random_byte: u8,
-}
-
-impl TestEnv {
-    fn deterministic(value: u8) -> Self {
-        Self { random_byte: value }
-    }
-}
-
-impl Environment for TestEnv {
-    type Instant = std::time::Instant;
-
-    fn now(&self) -> Self::Instant {
-        std::time::Instant::now()
-    }
-
-    fn sleep(&self, _duration: Duration) -> impl std::future::Future<Output = ()> + Send {
-        async {}
-    }
-
-    fn random_bytes(&self, buffer: &mut [u8]) {
-        buffer.fill(self.random_byte);
-    }
-}
-
-// Helper to create a message key at a specific generation
 fn create_message_key(seed: &[u8; 32], target_gen: u32) -> MessageKey {
     let mut ratchet = SymmetricRatchet::new(seed);
     let mut key = ratchet.advance().unwrap();
@@ -56,6 +24,7 @@ fn create_message_key(seed: &[u8; 32], target_gen: u32) -> MessageKey {
     key
 }
 
+// Property: Round-trip (decrypt(encrypt(m)) == m)
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(100))]
 
@@ -64,19 +33,24 @@ proptest! {
         plaintext in prop::collection::vec(any::<u8>(), 0..1000),
         epoch in any::<u64>(),
         sender_index in any::<u32>(),
-        random_byte in any::<u8>(),
+        random_suffix in prop::collection::vec(any::<u8>(), NONCE_RANDOM_SIZE..=NONCE_RANDOM_SIZE)
+            .prop_map(|v| {
+                let mut arr = [0u8; NONCE_RANDOM_SIZE];
+                arr.copy_from_slice(&v);
+                arr
+            }),
     ) {
-        let env = TestEnv::deterministic(random_byte);
         let seed = derive_sender_key_seed(b"test_epoch_secret_______________", epoch, sender_index);
         let message_key = create_message_key(&seed, 0);
 
-        let encrypted = encrypt_message(&plaintext, &message_key, epoch, sender_index, &env);
+        let encrypted = encrypt_message(&plaintext, &message_key, epoch, sender_index, random_suffix);
         let decrypted = decrypt_message(&encrypted, &message_key).unwrap();
 
         prop_assert_eq!(decrypted, plaintext);
     }
 }
 
+// Property: Key uniqueness across generations
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(50))]
 
@@ -111,6 +85,7 @@ proptest! {
     }
 }
 
+// Property: Determinism (same inputs = same outputs)
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(50))]
 
@@ -148,6 +123,7 @@ proptest! {
     }
 }
 
+// Property: Isolation (different senders/epochs produce different keys)
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(50))]
 
@@ -182,6 +158,7 @@ proptest! {
     }
 }
 
+// Property: Advance-to matches sequential advance
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(30))]
 
@@ -210,6 +187,7 @@ proptest! {
     }
 }
 
+// Property: Encrypted message structure
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(50))]
 
@@ -219,11 +197,11 @@ proptest! {
         epoch in any::<u64>(),
         sender_index in any::<u32>(),
     ) {
-        let env = TestEnv::deterministic(0x42);
+        let random_suffix = [0x42u8; NONCE_RANDOM_SIZE];
         let seed = derive_sender_key_seed(b"test_epoch_secret_______________", epoch, sender_index);
         let message_key = create_message_key(&seed, 0);
 
-        let encrypted = encrypt_message(&plaintext, &message_key, epoch, sender_index, &env);
+        let encrypted = encrypt_message(&plaintext, &message_key, epoch, sender_index, random_suffix);
 
         // Verify metadata is preserved
         prop_assert_eq!(encrypted.epoch, epoch);
@@ -236,5 +214,7 @@ proptest! {
         // Verify nonce structure
         prop_assert_eq!(&encrypted.nonce[0..8], &epoch.to_be_bytes());
         prop_assert_eq!(&encrypted.nonce[8..12], &sender_index.to_be_bytes());
+        // Last 8 bytes should be the random suffix
+        prop_assert_eq!(&encrypted.nonce[16..24], &random_suffix);
     }
 }

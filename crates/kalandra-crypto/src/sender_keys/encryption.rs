@@ -1,9 +1,7 @@
-//! Message encryption using XChaCha20-Poly1305
+//! Message encryption using `XChaCha20-Poly1305`
 //!
-//! XChaCha20-Poly1305 provides:
-//! - 256-bit key security
-//! - 192-bit nonces (safe for random generation)
-//! - Authenticated encryption with associated data (AEAD)
+//! All functions are pure - random bytes must be provided by the caller.
+//! This enables deterministic testing and maintains sans-IO compatibility.
 
 use chacha20poly1305::{
     XChaCha20Poly1305, XNonce,
@@ -11,10 +9,12 @@ use chacha20poly1305::{
 };
 
 use super::{error::SenderKeyError, ratchet::MessageKey};
-use crate::env::Environment;
 
-/// Poly1305 tag size (16 bytes, regardless of the message or key size)
-const POLY1305_TAG_LENGTH: usize = 16;
+/// Size of the random suffix in the nonce (8 bytes)
+pub const NONCE_RANDOM_SIZE: usize = 8;
+
+/// Poly1305 tag size (16 bytes)
+const POLY1305_TAG_SIZE: usize = 16;
 
 /// An encrypted message with metadata for decryption.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -25,45 +25,42 @@ pub struct EncryptedMessage {
     pub sender_index: u32,
     /// The ratchet generation (for key derivation)
     pub generation: u32,
-    /// The 24-byte XChaCha20 nonce
+    /// The 24-byte `XChaCha20` nonce
     pub nonce: [u8; 24],
     /// The ciphertext including 16-byte Poly1305 tag
     pub ciphertext: Vec<u8>,
 }
 
 impl EncryptedMessage {
-    /// Get the plaintext length (ciphertext minus Poly1305 tag)
+    /// Get the plaintext length (ciphertext minus tag)
     pub fn plaintext_len(&self) -> usize {
-        self.ciphertext.len().saturating_sub(POLY1305_TAG_LENGTH)
+        self.ciphertext.len().saturating_sub(POLY1305_TAG_SIZE)
     }
 }
 
-/// Encrypt a message using XChaCha20-Poly1305.
+/// Encrypt a message using `XChaCha20-Poly1305`.
 ///
 /// Returns `EncryptedMessage` containing the ciphertext and metadata.
-///
-/// # Panics
-///
-/// - `encrypt` panics on invalid nonce length
 ///
 /// # Security
 ///
 /// - Nonce is constructed to be unique per (epoch, sender, generation, random)
 /// - Random suffix prevents collision even if generation wraps
 /// - Authenticated encryption prevents tampering
-pub fn encrypt_message<E: Environment>(
+/// - Caller MUST provide cryptographically secure random bytes in production
+pub fn encrypt_message(
     plaintext: &[u8],
     message_key: &MessageKey,
     epoch: u64,
     sender_index: u32,
-    env: &E,
+    random_suffix: [u8; NONCE_RANDOM_SIZE],
 ) -> EncryptedMessage {
-    let nonce = build_nonce(epoch, sender_index, message_key.generation(), env);
+    let nonce = build_nonce(epoch, sender_index, message_key.generation(), random_suffix);
     let cipher = XChaCha20Poly1305::new(message_key.key().into());
 
-    let ciphertext = cipher
-        .encrypt(XNonce::from_slice(&nonce), plaintext)
-        .expect("encryption should not fail with valid inputs");
+    let Ok(ciphertext) = cipher.encrypt(XNonce::from_slice(&nonce), plaintext) else {
+        unreachable!("XChaCha20-Poly1305 encryption cannot fail with valid inputs");
+    };
 
     EncryptedMessage {
         epoch,
@@ -74,9 +71,9 @@ pub fn encrypt_message<E: Environment>(
     }
 }
 
-/// Decrypt a message using XChaCha20-Poly1305.
+/// Decrypt a message using `XChaCha20-Poly1305`.
 ///
-/// Returns decrypted plaintext.
+/// Returns the decrypted plaintext.
 ///
 /// # Errors
 ///
@@ -98,77 +95,63 @@ pub fn decrypt_message(
     }
 
     let cipher = XChaCha20Poly1305::new(message_key.key().into());
-    let xnonce = XNonce::from_slice(&encrypted.nonce);
-    let ciphertext = encrypted.ciphertext.as_slice();
+    let nonce = XNonce::from_slice(&encrypted.nonce);
+    let plaintext = encrypted.ciphertext.as_slice();
 
-    cipher.decrypt(xnonce, ciphertext).map_err(|_| SenderKeyError::DecryptionFailed {
+    cipher.decrypt(nonce, plaintext).map_err(|_| SenderKeyError::DecryptionFailed {
         reason: "authentication failed".to_string(),
     })
 }
 
-/// Build a 24-byte nonce for XChaCha20.
-fn build_nonce<E: Environment>(
+/// Build a 24-byte nonce for `XChaCha20`.
+///
+/// Structure:
+/// - bytes 0-7: epoch (big-endian)
+/// - bytes 8-11: `sender_index` (big-endian)
+/// - bytes 12-15: generation (big-endian)
+/// - bytes 16-23: random suffix (caller-provided)
+fn build_nonce(
     epoch: u64,
     sender_index: u32,
     generation: u32,
-    env: &E,
+    random_suffix: [u8; NONCE_RANDOM_SIZE],
 ) -> [u8; 24] {
     let mut nonce = [0u8; 24];
 
-    // bytes 0-7: epoch (big-endian)
+    // Epoch (8 bytes)
     nonce[0..8].copy_from_slice(&epoch.to_be_bytes());
-    // bytes 8-11: sender_index (big-endian)
+
+    // Sender index (4 bytes)
     nonce[8..12].copy_from_slice(&sender_index.to_be_bytes());
-    // bytes 12-15: generation (big-endian)
+
+    // Generation (4 bytes)
     nonce[12..16].copy_from_slice(&generation.to_be_bytes());
-    // bytes 16-23: random (from Environment)
-    env.random_bytes(&mut nonce[16..24]);
+
+    // Random suffix (8 bytes)
+    nonce[16..24].copy_from_slice(&random_suffix);
 
     nonce
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::indexing_slicing,
+    clippy::panic,
+    clippy::unwrap_used,
+    clippy::cast_possible_truncation,
+    clippy::arithmetic_side_effects,
+    clippy::unreadable_literal
+)]
 mod tests {
-    use std::time::Duration;
-
     use super::{super::ratchet::SymmetricRatchet, *};
 
-    // Test environment with deterministic randomness
-    #[derive(Clone)]
-    struct TestEnv {
-        random_value: u8,
-    }
-
-    impl TestEnv {
-        fn new(random_value: u8) -> Self {
-            Self { random_value }
-        }
-    }
-
-    impl Environment for TestEnv {
-        type Instant = std::time::Instant;
-
-        fn now(&self) -> Self::Instant {
-            std::time::Instant::now()
-        }
-
-        fn sleep(&self, _duration: Duration) -> impl std::future::Future<Output = ()> + Send {
-            async {}
-        }
-
-        fn random_bytes(&self, buffer: &mut [u8]) {
-            buffer.fill(self.random_value);
-        }
-    }
-
     fn test_message_key(target_gen: u32) -> MessageKey {
+        // Create a predictable key for testing
         let mut key = [0u8; 32];
         for (i, byte) in key.iter_mut().enumerate() {
             *byte = (i + target_gen as usize) as u8;
         }
 
-        // We need to construct MessageKey without its private constructor
-        // So we'll use the ratchet to create one
         let mut ratchet = SymmetricRatchet::new(&key);
 
         // Advance to desired generation
@@ -181,11 +164,11 @@ mod tests {
 
     #[test]
     fn encrypt_decrypt_roundtrip() {
-        let env = TestEnv::new(0xAB);
         let message_key = test_message_key(0);
         let plaintext = b"Hello, World!";
+        let random_suffix = [0xAB; NONCE_RANDOM_SIZE];
 
-        let encrypted = encrypt_message(plaintext, &message_key, 1, 42, &env);
+        let encrypted = encrypt_message(plaintext, &message_key, 1, 42, random_suffix);
         let decrypted = decrypt_message(&encrypted, &message_key).unwrap();
 
         assert_eq!(decrypted, plaintext);
@@ -193,11 +176,11 @@ mod tests {
 
     #[test]
     fn encrypt_decrypt_empty_message() {
-        let env = TestEnv::new(0x00);
         let message_key = test_message_key(0);
         let plaintext = b"";
+        let random_suffix = [0x00; NONCE_RANDOM_SIZE];
 
-        let encrypted = encrypt_message(plaintext, &message_key, 0, 0, &env);
+        let encrypted = encrypt_message(plaintext, &message_key, 0, 0, random_suffix);
         let decrypted = decrypt_message(&encrypted, &message_key).unwrap();
 
         assert_eq!(decrypted, plaintext);
@@ -205,11 +188,11 @@ mod tests {
 
     #[test]
     fn encrypt_decrypt_large_message() {
-        let env = TestEnv::new(0xFF);
         let message_key = test_message_key(0);
         let plaintext = vec![0x42u8; 64 * 1024]; // 64KB
+        let random_suffix = [0xFF; NONCE_RANDOM_SIZE];
 
-        let encrypted = encrypt_message(&plaintext, &message_key, 100, 200, &env);
+        let encrypted = encrypt_message(&plaintext, &message_key, 100, 200, random_suffix);
         let decrypted = decrypt_message(&encrypted, &message_key).unwrap();
 
         assert_eq!(decrypted, plaintext);
@@ -217,56 +200,51 @@ mod tests {
 
     #[test]
     fn encrypted_message_has_correct_metadata() {
-        let env = TestEnv::new(0x00);
         let message_key = test_message_key(5);
         let plaintext = b"test";
+        let random_suffix = [0x00; NONCE_RANDOM_SIZE];
 
-        let encrypted = encrypt_message(plaintext, &message_key, 42, 7, &env);
+        let encrypted = encrypt_message(plaintext, &message_key, 42, 7, random_suffix);
 
         assert_eq!(encrypted.epoch, 42);
         assert_eq!(encrypted.sender_index, 7);
-        // Generation comes from advance_to which will be at generation 5
-        // But our test_message_key function advances 6 times (0 through 5)
-        // so generation will be 5
+        assert_eq!(encrypted.generation, 5);
     }
 
     #[test]
     fn ciphertext_is_larger_than_plaintext() {
-        let env = TestEnv::new(0x00);
         let message_key = test_message_key(0);
         let plaintext = b"test message";
+        let random_suffix = [0x00; NONCE_RANDOM_SIZE];
 
-        let encrypted = encrypt_message(plaintext, &message_key, 0, 0, &env);
+        let encrypted = encrypt_message(plaintext, &message_key, 0, 0, random_suffix);
 
-        // Ciphertext should be plaintext + tag size
-        assert_eq!(encrypted.ciphertext.len(), plaintext.len() + POLY1305_TAG_LENGTH);
+        // Ciphertext should be plaintext + 16-byte tag
+        assert_eq!(encrypted.ciphertext.len(), plaintext.len() + POLY1305_TAG_SIZE);
     }
 
     #[test]
     fn different_random_produces_different_nonces() {
-        let env1 = TestEnv::new(0x00);
-        let env2 = TestEnv::new(0xFF);
         let message_key = test_message_key(0);
         let plaintext = b"test";
 
-        let encrypted1 = encrypt_message(plaintext, &message_key, 0, 0, &env1);
-        let encrypted2 = encrypt_message(plaintext, &message_key, 0, 0, &env2);
+        let encrypted1 = encrypt_message(plaintext, &message_key, 0, 0, [0x00; NONCE_RANDOM_SIZE]);
+        let encrypted2 = encrypt_message(plaintext, &message_key, 0, 0, [0xFF; NONCE_RANDOM_SIZE]);
 
-        // Different nonces equals different ciphertexts
         assert_ne!(encrypted1.nonce, encrypted2.nonce);
+        // Ciphertexts should also differ due to different nonces
         assert_ne!(encrypted1.ciphertext, encrypted2.ciphertext);
     }
 
     #[test]
     fn wrong_key_fails_decryption() {
-        let env = TestEnv::new(0x00);
         let message_key = test_message_key(0);
         let plaintext = b"secret message";
+        let random_suffix = [0x00; NONCE_RANDOM_SIZE];
 
-        let encrypted = encrypt_message(plaintext, &message_key, 0, 0, &env);
+        let encrypted = encrypt_message(plaintext, &message_key, 0, 0, random_suffix);
 
         // Create a message key from a different ratchet (different seed)
-        use super::super::ratchet::SymmetricRatchet;
         let mut different_seed = [0xFFu8; 32];
         different_seed[0] = 0x00;
         let mut ratchet = SymmetricRatchet::new(&different_seed);
@@ -285,11 +263,11 @@ mod tests {
 
     #[test]
     fn tampered_ciphertext_fails_decryption() {
-        let env = TestEnv::new(0x00);
         let message_key = test_message_key(0);
         let plaintext = b"original message";
+        let random_suffix = [0x00; NONCE_RANDOM_SIZE];
 
-        let mut encrypted = encrypt_message(plaintext, &message_key, 0, 0, &env);
+        let mut encrypted = encrypt_message(plaintext, &message_key, 0, 0, random_suffix);
 
         // Tamper with the ciphertext
         if !encrypted.ciphertext.is_empty() {
@@ -302,8 +280,8 @@ mod tests {
 
     #[test]
     fn nonce_structure() {
-        let env = TestEnv::new(0xAB);
-        let nonce = build_nonce::<TestEnv>(0x0102030405060708, 0x09_0A_0B_0C, 0x0D_0E_0F_10, &env);
+        let random_suffix = [0xAB; NONCE_RANDOM_SIZE];
+        let nonce = build_nonce(0x0102030405060708, 0x09_0A_0B_0C, 0x0D_0E_0F_10, random_suffix);
 
         // Check epoch (bytes 0-7)
         assert_eq!(&nonce[0..8], &[0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08]);
@@ -320,11 +298,11 @@ mod tests {
 
     #[test]
     fn plaintext_len_calculation() {
-        let env = TestEnv::new(0x00);
         let message_key = test_message_key(0);
         let plaintext = b"hello world";
+        let random_suffix = [0x00; NONCE_RANDOM_SIZE];
 
-        let encrypted = encrypt_message(plaintext, &message_key, 0, 0, &env);
+        let encrypted = encrypt_message(plaintext, &message_key, 0, 0, random_suffix);
 
         assert_eq!(encrypted.plaintext_len(), plaintext.len());
     }
