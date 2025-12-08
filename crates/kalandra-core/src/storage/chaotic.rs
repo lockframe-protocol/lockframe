@@ -64,11 +64,6 @@ impl ChaoticRng {
 impl<S: Storage> ChaoticStorage<S> {
     /// Create a new chaotic storage wrapper
     ///
-    /// # Parameters
-    ///
-    /// - `inner`: The underlying storage implementation
-    /// - `failure_rate`: Probability of failure [0.0, 1.0]
-    ///
     /// # Panics
     ///
     /// Panics if failure_rate is not in [0.0, 1.0]

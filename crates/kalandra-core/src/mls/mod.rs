@@ -9,6 +9,7 @@
 //! - **`group`**: Client-side MLS group state machine
 //! - **`state`**: MLS group state for storage and validation
 //! - **`provider`**: OpenMLS provider integration
+//! - **`validator`**: Frame validation for server sequencing
 //! - **`error`**: MLS-specific error types
 //! - **`constants`**: Protocol constants and limits
 //!
@@ -24,7 +25,6 @@ pub mod error;
 pub mod group;
 pub mod provider;
 pub mod state;
-/// Frame validation for server sequencing
 pub mod validator;
 
 pub use constants::MAX_EPOCH;

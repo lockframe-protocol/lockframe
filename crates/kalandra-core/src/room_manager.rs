@@ -182,7 +182,7 @@ where
     pub fn process_frame(
         &mut self,
         frame: Frame,
-        env: &E,
+        _env: &E, // TODO: integrate this
         storage: &impl Storage,
     ) -> Result<Vec<RoomAction>, RoomError> {
         // 1. Room must exist (no lazy creation)

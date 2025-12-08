@@ -48,7 +48,6 @@ impl MlsValidator {
     ) -> Result<ValidationResult, MlsError> {
         debug_assert!(current_epoch < MAX_EPOCH);
 
-        // 1. Check epoch matches
         let frame_epoch = frame.header.epoch();
         if frame_epoch != current_epoch {
             return Ok(ValidationResult::Reject {
@@ -58,7 +57,6 @@ impl MlsValidator {
 
         debug_assert_eq!(frame_epoch, current_epoch);
 
-        // 2. Verify sender is member
         let sender_id = frame.header.sender_id();
         if !group_state.is_member(sender_id) {
             return Ok(ValidationResult::Reject {
@@ -68,7 +66,7 @@ impl MlsValidator {
 
         debug_assert!(group_state.is_member(sender_id));
 
-        // 3. TODO: Verify signature (Phase 2 extension)
+        // TODO: Verify signature
         // Currently we trust the client signature. In production, we would:
         // - Extract sender's public key from group_state
         // - Verify Ed25519 signature over frame header
@@ -88,7 +86,7 @@ impl MlsValidator {
     /// Note: Validation failures return `Ok(ValidationResult::Reject)`, not
     /// errors.
     pub fn validate_frame_no_state(frame: &Frame) -> Result<ValidationResult, MlsError> {
-        // For now, accept all frames when no MLS state exists
+        // NOTE: Accepts all frames when no MLS state exists
         // In production, we might want to:
         // - Check that epoch is 0
         // - Validate frame is a Welcome or initial Commit

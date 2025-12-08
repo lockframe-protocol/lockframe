@@ -10,25 +10,6 @@ use openmls_traits::{OpenMlsProvider, random::OpenMlsRand};
 use crate::env::Environment;
 
 /// Kalandra's OpenMLS provider that uses our Environment trait for RNG.
-///
-/// This provider integrates OpenMLS with Sans-IO architecture:
-///
-/// - **Crypto**: Uses RustCrypto (synchronous crypto primitives)
-/// - **RNG**: Wraps our Environment trait's random_bytes()
-/// - **Storage**: Uses in-memory storage for now (TODO: add persistence)
-///
-/// # Type Parameters
-///
-/// - `E`: The environment implementation (SimEnv or SystemEnv)
-///
-/// # Design
-///
-/// OpenMLS expects a `&Provider` passed to all operations. We store our
-/// Environment inside this provider and delegate RNG calls to it, ensuring:
-///
-/// 1. **Determinism**: In simulation, RNG is seeded via Turmoil
-/// 2. **Security**: In production, RNG uses OS entropy
-/// 3. **Testability**: No hidden global state
 pub struct MlsProvider<E: Environment> {
     /// OpenMLS crypto provider (sync crypto operations)
     crypto: RustCrypto,
@@ -41,9 +22,7 @@ pub struct MlsProvider<E: Environment> {
 }
 
 impl<E: Environment> MlsProvider<E> {
-    /// Create a new provider with the given environment.
-    ///
-    /// Initializes a provider with in-memory storage and RNG seeded by the
+    /// Initialize a provider with in-memory storage and RNG seeded by the
     /// environment. In simulation, the environment provides deterministic RNG.
     /// In production, it provides crypto-secure randomness.
     pub fn new(env: E) -> Self {
