@@ -62,6 +62,23 @@ pub enum MlsAction {
     },
 }
 
+/// Extract member_id from an MLS credential.
+///
+/// Our credentials store the member_id as little-endian u64 bytes.
+fn extract_member_id_from_credential(credential: &Credential) -> Result<MemberId, MlsError> {
+    let bytes = credential.serialized_content();
+    if bytes.len() < 8 {
+        return Err(MlsError::Crypto(format!(
+            "Invalid credential: expected 8 bytes for member_id, got {}",
+            bytes.len()
+        )));
+    }
+    let member_id_bytes: [u8; 8] = bytes[..8]
+        .try_into()
+        .map_err(|_| MlsError::Crypto("Failed to extract member_id bytes".to_string()))?;
+    Ok(u64::from_le_bytes(member_id_bytes))
+}
+
 /// Client-side MLS group state.
 ///
 /// Represents participation in a single MLS group (room). Clients can be
@@ -142,7 +159,10 @@ impl<E: Environment> MlsGroup<E> {
             signature_key: signer.public().into(),
         };
 
-        let group_config = MlsGroupCreateConfig::builder().ciphersuite(ciphersuite).build();
+        let group_config = MlsGroupCreateConfig::builder()
+            .ciphersuite(ciphersuite)
+            .use_ratchet_tree_extension(true)
+            .build();
         let mls_group =
             openmls::group::MlsGroup::new(&provider, &signer, &group_config, credential_with_key)
                 .map_err(|e| MlsError::Crypto(format!("Failed to create MLS group: {}", e)))?;
@@ -304,12 +324,15 @@ impl<E: Environment> MlsGroup<E> {
             .process_message(&self.provider, protocol_message)
             .map_err(|e| MlsError::Crypto(format!("Failed to process message: {}", e)))?;
 
+        // Extract sender_id from credential before consuming the message
+        let sender_id = extract_member_id_from_credential(processed.credential())?;
+
         let mut actions = Vec::new();
 
         match processed.into_content() {
             ProcessedMessageContent::ApplicationMessage(app_msg) => {
                 actions.push(MlsAction::DeliverMessage {
-                    sender: 0, // TODO: Map leaf index to member ID
+                    sender: sender_id,
                     plaintext: app_msg.into_bytes(),
                 });
             },
@@ -553,6 +576,86 @@ impl<E: Environment> MlsGroup<E> {
         Ok((serialized, hash_ref.as_slice().to_vec()))
     }
 
+    /// Generate a KeyPackage and return with provider state for later use.
+    ///
+    /// Unlike `generate_key_package`, this returns the provider and signer
+    /// so that `join_from_welcome_with_state` can access the private key.
+    ///
+    /// Returns (key_package_bytes, hash_ref, provider, signer)
+    pub fn generate_key_package_with_state(
+        env: E,
+        member_id: MemberId,
+    ) -> Result<(Vec<u8>, Vec<u8>, MlsProvider<E>, SignatureKeyPair), MlsError> {
+        let provider = MlsProvider::new(env);
+        let ciphersuite = Ciphersuite::MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519;
+
+        let signer = SignatureKeyPair::new(ciphersuite.signature_algorithm())
+            .map_err(|e| MlsError::Crypto(format!("Failed to generate keypair: {}", e)))?;
+
+        let credential = BasicCredential::new(member_id.to_le_bytes().to_vec());
+        let credential_with_key = CredentialWithKey {
+            credential: credential.into(),
+            signature_key: signer.public().into(),
+        };
+
+        let key_package_bundle = KeyPackage::builder()
+            .build(ciphersuite, &provider, &signer, credential_with_key)
+            .map_err(|e| MlsError::Crypto(format!("Failed to build KeyPackage: {}", e)))?;
+
+        let key_package = key_package_bundle.key_package();
+
+        let serialized = key_package.tls_serialize_detached().map_err(|e| {
+            MlsError::Serialization(format!("Failed to serialize KeyPackage: {}", e))
+        })?;
+
+        let hash_ref = key_package
+            .hash_ref(provider.crypto())
+            .map_err(|e| MlsError::Crypto(format!("Failed to compute KeyPackage hash: {}", e)))?;
+
+        Ok((serialized, hash_ref.as_slice().to_vec(), provider, signer))
+    }
+
+    /// Join a group from a Welcome message using pre-existing provider state.
+    ///
+    /// This variant accepts a provider and signer that were used to generate
+    /// the KeyPackage, ensuring the private key is available for decryption.
+    pub fn join_from_welcome_with_state(
+        room_id: RoomId,
+        member_id: MemberId,
+        welcome_bytes: &[u8],
+        provider: MlsProvider<E>,
+        signer: SignatureKeyPair,
+    ) -> Result<(Self, Vec<MlsAction>), MlsError> {
+        let mls_message =
+            MlsMessageIn::tls_deserialize(&mut welcome_bytes.as_ref()).map_err(|e| {
+                MlsError::Serialization(format!("Failed to deserialize Welcome: {}", e))
+            })?;
+
+        let welcome = match mls_message.extract() {
+            MlsMessageBodyIn::Welcome(w) => w,
+            _ => return Err(MlsError::Serialization("Message is not a Welcome".to_string())),
+        };
+
+        let group_config = MlsGroupJoinConfig::builder().build();
+
+        let mls_group = StagedWelcome::new_from_welcome(&provider, &group_config, welcome, None)
+            .map_err(|e| MlsError::Crypto(format!("Failed to stage Welcome: {}", e)))?
+            .into_group(&provider)
+            .map_err(|e| MlsError::Crypto(format!("Failed to join group from Welcome: {}", e)))?;
+
+        let epoch = mls_group.epoch().as_u64();
+        let group = Self { room_id, member_id, mls_group, signer, provider, pending_commit: None };
+
+        let actions = vec![MlsAction::Log {
+            message: format!(
+                "Joined group {} at epoch {} via Welcome (member_id={})",
+                room_id, epoch, member_id
+            ),
+        }];
+
+        Ok((group, actions))
+    }
+
     /// Add members to the group by their KeyPackages.
     ///
     /// Creates a commit that adds the specified members to the group. The
@@ -590,9 +693,9 @@ impl<E: Environment> MlsGroup<E> {
             payload: welcome_payload.into(),
         };
 
-        for _kp in &key_packages {
-            // TODO: track individual recipients
-            actions.push(MlsAction::SendWelcome { recipient: 0, frame: welcome_frame.clone() });
+        for kp in &key_packages {
+            let recipient = extract_member_id_from_credential(kp.leaf_node().credential())?;
+            actions.push(MlsAction::SendWelcome { recipient, frame: welcome_frame.clone() });
         }
 
         actions.push(MlsAction::Log {
@@ -674,5 +777,129 @@ mod tests {
 
         // After timeout
         assert!(group.is_commit_timeout(now + Duration::from_secs(6), Duration::from_secs(5)));
+    }
+
+    /// Test that process_message returns the correct sender_id.
+    ///
+    /// This test exposes the bug where sender is hardcoded to 0 in
+    /// DeliverMessage.
+    #[test]
+    fn process_message_returns_correct_sender() {
+        let env = TestEnv;
+        let now = Instant::now();
+        let room_id = 0x1234_5678_9abc_def0_1234_5678_9abc_def0;
+
+        // Alice creates the group
+        let alice_id = 42u64;
+        let (mut alice_group, _) =
+            MlsGroup::new(env.clone(), room_id, alice_id, now).expect("alice create group");
+
+        // Bob generates a KeyPackage (keeping provider state for later)
+        let bob_id = 100u64;
+        let (bob_kp_bytes, _, bob_provider, bob_signer) =
+            MlsGroup::generate_key_package_with_state(env.clone(), bob_id)
+                .expect("bob generate key package");
+
+        // Alice adds Bob - creates Commit and Welcome
+        let add_actions =
+            alice_group.add_members_from_bytes(&[bob_kp_bytes]).expect("alice add bob");
+
+        // Find the Welcome for Bob
+        let welcome_frame = add_actions
+            .iter()
+            .find_map(|a| match a {
+                MlsAction::SendWelcome { frame, .. } => Some(frame.clone()),
+                _ => None,
+            })
+            .expect("should have welcome");
+
+        // Alice merges her pending commit
+        alice_group.merge_pending_commit().expect("alice merge commit");
+
+        // Bob joins via Welcome (using his stored provider state)
+        let (mut bob_group, _) = MlsGroup::join_from_welcome_with_state(
+            room_id,
+            bob_id,
+            &welcome_frame.payload,
+            bob_provider,
+            bob_signer,
+        )
+        .expect("bob join via welcome");
+
+        // Alice creates a message
+        let alice_message_actions =
+            alice_group.create_message(b"Hello from Alice").expect("alice create message");
+
+        let message_frame = alice_message_actions
+            .iter()
+            .find_map(|a| match a {
+                MlsAction::SendMessage(frame) => Some(frame.clone()),
+                _ => None,
+            })
+            .expect("should have message frame");
+
+        // Bob processes the message
+        let bob_receive_actions =
+            bob_group.process_message(message_frame).expect("bob process message");
+
+        // ORACLE: DeliverMessage should have sender = alice_id (42), not 0
+        let delivered = bob_receive_actions
+            .iter()
+            .find_map(|a| match a {
+                MlsAction::DeliverMessage { sender, plaintext } => {
+                    Some((*sender, plaintext.clone()))
+                },
+                _ => None,
+            })
+            .expect("should have DeliverMessage");
+
+        assert_eq!(
+            delivered.0, alice_id,
+            "Sender should be Alice's member_id ({}), not {}",
+            alice_id, delivered.0
+        );
+        assert_eq!(delivered.1, b"Hello from Alice");
+    }
+
+    /// Test that add_members returns the correct recipient in SendWelcome.
+    ///
+    /// This test exposes the bug where recipient is hardcoded to 0 in
+    /// SendWelcome.
+    #[test]
+    fn add_members_returns_correct_welcome_recipient() {
+        let env = TestEnv;
+        let now = Instant::now();
+        let room_id = 0x1234_5678_9abc_def0_1234_5678_9abc_def0;
+
+        // Alice creates the group
+        let alice_id = 42u64;
+        let (mut alice_group, _) =
+            MlsGroup::new(env.clone(), room_id, alice_id, now).expect("alice create group");
+
+        // Bob generates a KeyPackage with his member_id
+        let bob_id = 100u64;
+        let (bob_kp_bytes, _, _, _) =
+            MlsGroup::generate_key_package_with_state(env.clone(), bob_id)
+                .expect("bob generate key package");
+
+        // Alice adds Bob
+        let add_actions =
+            alice_group.add_members_from_bytes(&[bob_kp_bytes]).expect("alice add bob");
+
+        // Find the Welcome action
+        let welcome_recipient = add_actions
+            .iter()
+            .find_map(|a| match a {
+                MlsAction::SendWelcome { recipient, .. } => Some(*recipient),
+                _ => None,
+            })
+            .expect("should have SendWelcome action");
+
+        // ORACLE: SendWelcome.recipient should be Bob's member_id (100), not 0
+        assert_eq!(
+            welcome_recipient, bob_id,
+            "Welcome recipient should be Bob's member_id ({}), not {}",
+            bob_id, welcome_recipient
+        );
     }
 }
