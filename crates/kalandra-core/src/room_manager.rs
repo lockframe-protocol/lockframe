@@ -170,9 +170,8 @@ where
         // Create MLS group with Environment
         // For server-side room creation, we use room_id as member_id (server is initial
         // member)
-        let now = env.now();
         let (group, _actions) =
-            MlsGroup::new(env.clone(), room_id, creator, now).map_err(RoomError::MlsValidation)?;
+            MlsGroup::new(env.clone(), room_id, creator).map_err(RoomError::MlsValidation)?;
         self.groups.insert(room_id, group);
 
         // Store metadata (placeholder for future auth)

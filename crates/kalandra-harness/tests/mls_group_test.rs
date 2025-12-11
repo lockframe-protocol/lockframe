@@ -16,13 +16,12 @@ fn mls_group_creation() {
 
     sim.host("test", || async {
         let env = SimEnv::new();
-        let now = env.now();
         let room_id = 0x1234_5678_9abc_def0_1234_5678_9abc_def0;
         let member_id = 1;
 
         // Create a new MLS group
         let (group, actions) =
-            MlsGroup::new(env, room_id, member_id, now).expect("group creation should succeed");
+            MlsGroup::new(env, room_id, member_id).expect("group creation should succeed");
 
         // Verify initial state
         assert_eq!(group.room_id(), room_id, "Room ID should match");
@@ -53,11 +52,10 @@ fn mls_group_multiple_instances() {
     sim.host("test", || async {
         // Verify we can create multiple independent groups
         let env = SimEnv::new();
-        let now = env.now();
 
-        let (group1, _) = MlsGroup::new(env.clone(), 1, 100, now).unwrap();
-        let (group2, _) = MlsGroup::new(env.clone(), 2, 200, now).unwrap();
-        let (group3, _) = MlsGroup::new(env, 3, 300, now).unwrap();
+        let (group1, _) = MlsGroup::new(env.clone(), 1, 100).unwrap();
+        let (group2, _) = MlsGroup::new(env.clone(), 2, 200).unwrap();
+        let (group3, _) = MlsGroup::new(env, 3, 300).unwrap();
 
         // Each should have correct room/member IDs
         assert_eq!(group1.room_id(), 1);
@@ -88,7 +86,7 @@ fn mls_group_commit_timeout() {
         // Verify commit timeout detection works
         let env = SimEnv::new();
         let now = env.now();
-        let (group, _) = MlsGroup::new(env, 1, 100, now).unwrap();
+        let (group, _) = MlsGroup::new(env, 1, 100).unwrap();
 
         // No timeout initially
         let timeout_duration = std::time::Duration::from_secs(30);

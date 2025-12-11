@@ -153,10 +153,9 @@ impl<E: Environment> Client<E> {
             return Err(ClientError::RoomAlreadyExists { room_id });
         }
 
-        let now = self.env.now();
         let member_id = self.identity.sender_id;
 
-        let (mls_group, mls_actions) = MlsGroup::new(self.env.clone(), room_id, member_id, now)
+        let (mls_group, mls_actions) = MlsGroup::new(self.env.clone(), room_id, member_id)
             .map_err(|e| ClientError::Mls { reason: e.to_string() })?;
 
         let sender_keys = self.initialize_sender_keys(&mls_group)?;

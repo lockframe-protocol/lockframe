@@ -142,11 +142,7 @@ impl<E: Environment> MlsGroup<E> {
         env: E,
         room_id: RoomId,
         member_id: MemberId,
-        now: E::Instant,
     ) -> Result<(Self, Vec<MlsAction>), MlsError> {
-        // `now` is not used yet (pending_commit starts as None), but is correctly typed
-        // for future use when we create commits and track their timestamps
-        let _ = now;
         let provider = MlsProvider::new(env);
         let ciphersuite = Ciphersuite::MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519;
 
@@ -519,17 +515,12 @@ impl<E: Environment> MlsGroup<E> {
             })
             .collect();
 
-        // Note: OpenMLS doesn't expose tree_hash() directly on MlsGroup.
-        // For now, derive a hash from the epoch secret as a proxy.
-        // In production, we'd need to compute this from the ratchet tree.
-        let tree_hash: [u8; 32] = self
-            .export_secret("tree_hash_proxy", b"", 32)
-            .map(|v| v.try_into().unwrap_or([0u8; 32]))
-            .unwrap_or([0u8; 32]);
+        let tree_hash: [u8; 32] =
+            self.mls_group.export_group_context().tree_hash().try_into().unwrap_or([0u8; 32]);
 
-        let openmls_state = self.export_state().unwrap_or_default();
+        let state = self.export_state().unwrap_or_default();
 
-        MlsGroupState::new(self.room_id, self.epoch(), tree_hash, members, openmls_state)
+        MlsGroupState::new(self.room_id, self.epoch(), tree_hash, members, state)
     }
 
     /// Generate a KeyPackage for joining groups.
@@ -737,12 +728,11 @@ mod tests {
     #[test]
     fn create_group() {
         let env = TestEnv;
-        let now = Instant::now();
         let room_id = 0x1234_5678_9abc_def0_1234_5678_9abc_def0;
         let member_id = 1;
 
         let (group, actions) =
-            MlsGroup::new(env, room_id, member_id, now).expect("create should succeed");
+            MlsGroup::new(env, room_id, member_id).expect("create should succeed");
 
         assert_eq!(group.room_id(), room_id);
         assert_eq!(group.member_id(), member_id);
@@ -761,7 +751,7 @@ mod tests {
         let room_id = 0x1234_5678_9abc_def0_1234_5678_9abc_def0;
         let member_id = 1;
 
-        let (mut group, _) = MlsGroup::new(env, room_id, member_id, now).unwrap();
+        let (mut group, _) = MlsGroup::new(env, room_id, member_id).unwrap();
 
         // No pending commit initially
         assert!(!group.is_commit_timeout(now, Duration::from_secs(5)));
@@ -786,13 +776,12 @@ mod tests {
     #[test]
     fn process_message_returns_correct_sender() {
         let env = TestEnv;
-        let now = Instant::now();
         let room_id = 0x1234_5678_9abc_def0_1234_5678_9abc_def0;
 
         // Alice creates the group
         let alice_id = 42u64;
         let (mut alice_group, _) =
-            MlsGroup::new(env.clone(), room_id, alice_id, now).expect("alice create group");
+            MlsGroup::new(env.clone(), room_id, alice_id).expect("alice create group");
 
         // Bob generates a KeyPackage (keeping provider state for later)
         let bob_id = 100u64;
@@ -868,13 +857,12 @@ mod tests {
     #[test]
     fn add_members_returns_correct_welcome_recipient() {
         let env = TestEnv;
-        let now = Instant::now();
         let room_id = 0x1234_5678_9abc_def0_1234_5678_9abc_def0;
 
         // Alice creates the group
         let alice_id = 42u64;
         let (mut alice_group, _) =
-            MlsGroup::new(env.clone(), room_id, alice_id, now).expect("alice create group");
+            MlsGroup::new(env.clone(), room_id, alice_id).expect("alice create group");
 
         // Bob generates a KeyPackage with his member_id
         let bob_id = 100u64;
