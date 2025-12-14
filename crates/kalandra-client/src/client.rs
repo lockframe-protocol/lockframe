@@ -10,7 +10,10 @@ use kalandra_core::{
     mls::{MlsAction, MlsGroup, RoomId},
 };
 use kalandra_crypto::{EncryptedMessage as CryptoEncryptedMessage, NONCE_RANDOM_SIZE};
-use kalandra_proto::{Frame, FrameHeader, Opcode, payloads::app::EncryptedMessage};
+use kalandra_proto::{
+    Frame, FrameHeader, Opcode,
+    payloads::{app::EncryptedMessage, session::SyncResponse},
+};
 
 use crate::{
     error::ClientError,
@@ -236,6 +239,7 @@ impl<E: Environment> Client<E> {
             Opcode::AppMessage => self.handle_app_message(room_id, frame),
             Opcode::Commit => self.handle_commit(room_id, frame),
             Opcode::Welcome => self.handle_welcome(room_id, frame),
+            Opcode::SyncResponse => self.handle_sync_response(room_id, frame),
             _ => {
                 // MLS
                 let room =
@@ -389,6 +393,84 @@ impl<E: Environment> Client<E> {
         });
 
         Ok(actions)
+    }
+
+    /// Handle sync response from server.
+    ///
+    /// Processes frames from the sync response in order to catch up
+    /// to the server's epoch. Each frame is decoded and processed
+    /// sequentially.
+    ///
+    /// # Protocol Flow
+    ///
+    /// 1. Decode SyncResponse payload
+    /// 2. For each frame in order: decode and process
+    /// 3. If `has_more` is true, emit another RequestSync action
+    /// 4. After all frames processed, client should be at server_epoch
+    fn handle_sync_response(
+        &mut self,
+        room_id: RoomId,
+        frame: Frame,
+    ) -> Result<Vec<ClientAction>, ClientError> {
+        let sync_response: SyncResponse =
+            ciborium::de::from_reader(&frame.payload[..]).map_err(|e| {
+                ClientError::InvalidFrame { reason: format!("Failed to decode SyncResponse: {e}") }
+            })?;
+
+        let mut all_actions = Vec::new();
+
+        all_actions.push(ClientAction::Log {
+            message: format!(
+                "Processing sync response for room {room_id:x}: {} frames, has_more={}, server_epoch={}",
+                sync_response.frames.len(),
+                sync_response.has_more,
+                sync_response.server_epoch
+            ),
+        });
+
+        for (i, frame_bytes) in sync_response.frames.iter().enumerate() {
+            let sync_frame = Frame::decode(frame_bytes).map_err(|e| ClientError::InvalidFrame {
+                reason: format!("Failed to decode sync frame {i}: {e}"),
+            })?;
+
+            match self.handle_frame(sync_frame) {
+                Ok(actions) => all_actions.extend(actions),
+                Err(e) => {
+                    // Log error but continue processing remaining frames
+                    // Some frames might be from epochs we already have
+                    all_actions.push(ClientAction::Log {
+                        message: format!("Sync frame {i} processing error (may be expected): {e}"),
+                    });
+                },
+            }
+        }
+
+        if sync_response.has_more {
+            // More frames avaliable
+            let current_epoch = self.rooms.get(&room_id).map(|r| r.mls_group.epoch()).unwrap_or(0);
+
+            all_actions.push(ClientAction::RequestSync {
+                room_id,
+                from_epoch: current_epoch,
+                to_epoch: sync_response.server_epoch,
+            });
+
+            all_actions.push(ClientAction::Log {
+                message: format!(
+                    "Sync incomplete, requesting more frames for room {room_id:x} (current epoch: {current_epoch}, target: {})",
+                    sync_response.server_epoch
+                ),
+            });
+        } else {
+            all_actions.push(ClientAction::Log {
+                message: format!(
+                    "Sync complete for room {room_id:x}, now at epoch {}",
+                    self.rooms.get(&room_id).map(|r| r.mls_group.epoch()).unwrap_or(0)
+                ),
+            });
+        }
+
+        Ok(all_actions)
     }
 
     /// Handle add members request.

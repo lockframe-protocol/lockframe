@@ -291,3 +291,124 @@ fn process_commit_advances_epoch() {
         result.err()
     );
 }
+
+/// Test that handle_sync_request loads frames from storage and returns them.
+#[test]
+fn handle_sync_request_returns_stored_frames() {
+    let env = TestEnv;
+    let mut manager = RoomManager::new();
+    let storage = MemoryStorage::new();
+
+    let room_id = 0x1234_5678_90ab_cdef_1234_5678_90ab_cdef;
+    let creator = 42;
+    let requester = 100;
+
+    // Create room
+    manager.create_room(room_id, creator, &env).unwrap();
+
+    // Store some frames directly in storage
+    for i in 0..5 {
+        let mut header = FrameHeader::new(Opcode::AppMessage);
+        header.set_room_id(room_id);
+        header.set_sender_id(creator);
+        header.set_log_index(i);
+        header.set_epoch(0);
+        let frame = Frame::new(header, Bytes::from(format!("message {i}")));
+        storage.store_frame(room_id, i, &frame).unwrap();
+    }
+
+    // Request sync from index 0
+    let result = manager.handle_sync_request(room_id, requester, 0, 10, &env, &storage);
+    assert!(result.is_ok());
+
+    use kalandra_core::room_manager::RoomAction;
+    let action = result.unwrap();
+    match action {
+        RoomAction::SendSyncResponse {
+            sender_id,
+            room_id: rid,
+            frames,
+            has_more,
+            server_epoch,
+            ..
+        } => {
+            assert_eq!(sender_id, requester);
+            assert_eq!(rid, room_id);
+            assert_eq!(frames.len(), 5);
+            assert!(!has_more);
+            assert_eq!(server_epoch, 0);
+        },
+        _ => panic!("Expected SendSyncResponse action"),
+    }
+}
+
+/// Test that handle_sync_request respects limit and sets has_more.
+#[test]
+fn handle_sync_request_paginates_with_limit() {
+    let env = TestEnv;
+    let mut manager = RoomManager::new();
+    let storage = MemoryStorage::new();
+
+    let room_id = 0x1234_5678_90ab_cdef_1234_5678_90ab_cdef;
+    let creator = 42;
+
+    // Create room
+    manager.create_room(room_id, creator, &env).unwrap();
+
+    // Store 10 frames
+    for i in 0..10 {
+        let mut header = FrameHeader::new(Opcode::AppMessage);
+        header.set_room_id(room_id);
+        header.set_sender_id(creator);
+        header.set_log_index(i);
+        header.set_epoch(0);
+        let frame = Frame::new(header, Bytes::from(format!("message {i}")));
+        storage.store_frame(room_id, i, &frame).unwrap();
+    }
+
+    // Request sync with limit of 3
+    let result = manager.handle_sync_request(room_id, 100, 0, 3, &env, &storage);
+    assert!(result.is_ok());
+
+    use kalandra_core::room_manager::RoomAction;
+    let action = result.unwrap();
+    match action {
+        RoomAction::SendSyncResponse { frames, has_more, .. } => {
+            assert_eq!(frames.len(), 3);
+            assert!(has_more, "Should indicate more frames available");
+        },
+        _ => panic!("Expected SendSyncResponse action"),
+    }
+
+    // Request next batch starting from index 3
+    let result = manager.handle_sync_request(room_id, 100, 3, 3, &env, &storage);
+    assert!(result.is_ok());
+
+    let action = result.unwrap();
+    match action {
+        RoomAction::SendSyncResponse { frames, has_more, .. } => {
+            assert_eq!(frames.len(), 3);
+            assert!(has_more, "Should still indicate more frames available");
+        },
+        _ => panic!("Expected SendSyncResponse action"),
+    }
+}
+
+/// Test that handle_sync_request returns error for unknown room.
+#[test]
+fn handle_sync_request_unknown_room_fails() {
+    let env = TestEnv;
+    let manager = RoomManager::<TestEnv>::new();
+    let storage = MemoryStorage::new();
+
+    let result = manager.handle_sync_request(
+        0x9999_9999_9999_9999_9999_9999_9999_9999,
+        100,
+        0,
+        10,
+        &env,
+        &storage,
+    );
+
+    assert!(matches!(result, Err(RoomError::RoomNotFound(_))));
+}

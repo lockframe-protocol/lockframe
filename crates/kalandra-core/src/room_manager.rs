@@ -109,6 +109,22 @@ pub enum RoomAction<I> {
         /// When the rejection occurred
         processed_at: I,
     },
+
+    /// Send sync response to client
+    SendSyncResponse {
+        /// Sender to reply to
+        sender_id: u64,
+        /// Room ID the sync is for
+        room_id: u128,
+        /// Raw frame bytes to send (each frame serialized)
+        frames: Vec<Vec<u8>>,
+        /// Whether more frames are available
+        has_more: bool,
+        /// Current epoch for this room
+        server_epoch: u64,
+        /// When the response was prepared
+        processed_at: I,
+    },
 }
 
 /// Errors from RoomManager operations
@@ -234,6 +250,68 @@ where
         let group = self.groups.get_mut(&room_id).ok_or(RoomError::RoomNotFound(room_id))?;
         let actions = group.leave_group()?;
         Ok(actions)
+    }
+
+    /// Handle a sync request from a client.
+    ///
+    /// Loads frames from storage starting at `from_log_index` and returns
+    /// a `SendSyncResponse` action for the driver to send back to the client.
+    ///
+    /// # Protocol Flow
+    ///
+    /// 1. Client detects epoch mismatch or commit timeout
+    /// 2. Client sends SyncRequest with `from_log_index`
+    /// 3. Server calls this method to load frames from storage
+    /// 4. Server sends SyncResponse with frames batch
+    /// 5. Client processes frames in order to catch up
+    /// 6. If `has_more` is true, client sends another SyncRequest
+    ///
+    /// # Errors
+    ///
+    /// Returns `RoomError::RoomNotFound` if the room doesn't exist.
+    /// Returns `RoomError::Storage` if frame loading fails.
+    pub fn handle_sync_request(
+        &self,
+        room_id: u128,
+        sender_id: u64,
+        from_log_index: u64,
+        limit: usize,
+        env: &E,
+        storage: &impl Storage,
+    ) -> Result<RoomAction<E::Instant>, RoomError> {
+        let now = env.now();
+
+        let group = self.groups.get(&room_id).ok_or(RoomError::RoomNotFound(room_id))?;
+        let server_epoch = group.epoch();
+
+        let frames = storage.load_frames(room_id, from_log_index, limit)?;
+
+        let frame_bytes: Vec<Vec<u8>> = frames
+            .iter()
+            .map(|f| {
+                let mut buf = Vec::new();
+                // Frame encoding should not fail for valid frames
+                f.encode(&mut buf).expect("invariant: stored frames are valid");
+                buf
+            })
+            .collect();
+
+        let latest_index = storage.latest_log_index(room_id)?;
+        let last_loaded_index = if frames.is_empty() {
+            from_log_index.saturating_sub(1)
+        } else {
+            from_log_index + frames.len() as u64 - 1
+        };
+        let has_more = latest_index.is_some_and(|latest| last_loaded_index < latest);
+
+        Ok(RoomAction::SendSyncResponse {
+            sender_id,
+            room_id,
+            frames: frame_bytes,
+            has_more,
+            server_epoch,
+            processed_at: now,
+        })
     }
 
     /// Process a frame through MLS validation and sequencing

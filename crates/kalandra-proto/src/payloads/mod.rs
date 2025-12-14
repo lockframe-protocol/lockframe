@@ -83,6 +83,10 @@ pub enum Payload {
     Ping,
     /// Pong response
     Pong,
+    /// Client sync request
+    SyncRequest(session::SyncRequest),
+    /// Server sync response
+    SyncResponse(session::SyncResponse),
 
     // MLS Operations
     /// Key package upload
@@ -151,6 +155,8 @@ impl Payload {
             Self::Goodbye(_) => Opcode::Goodbye,
             Self::Ping => Opcode::Ping,
             Self::Pong => Opcode::Pong,
+            Self::SyncRequest(_) => Opcode::SyncRequest,
+            Self::SyncResponse(_) => Opcode::SyncResponse,
             Self::KeyPackage(_) => Opcode::KeyPackage,
             Self::Proposal(_) => Opcode::Proposal,
             Self::Commit(_) => Opcode::Commit,
@@ -192,6 +198,8 @@ impl Payload {
             Self::HelloReply(inner) => ciborium::ser::into_writer(inner, &mut writer),
             Self::Goodbye(inner) => ciborium::ser::into_writer(inner, &mut writer),
             Self::Ping | Self::Pong => Ok(()), // Zero-byte payloads
+            Self::SyncRequest(inner) => ciborium::ser::into_writer(inner, &mut writer),
+            Self::SyncResponse(inner) => ciborium::ser::into_writer(inner, &mut writer),
             Self::KeyPackage(inner) => ciborium::ser::into_writer(inner, &mut writer),
             Self::Proposal(inner) => ciborium::ser::into_writer(inner, &mut writer),
             Self::Commit(inner) => ciborium::ser::into_writer(inner, &mut writer),
@@ -249,6 +257,14 @@ impl Payload {
             ),
             Opcode::Ping => Self::Ping,
             Opcode::Pong => Self::Pong,
+            Opcode::SyncRequest => Self::SyncRequest(
+                ciborium::de::from_reader(bytes)
+                    .map_err(|e| ProtocolError::CborDecode(e.to_string()))?,
+            ),
+            Opcode::SyncResponse => Self::SyncResponse(
+                ciborium::de::from_reader(bytes)
+                    .map_err(|e| ProtocolError::CborDecode(e.to_string()))?,
+            ),
             Opcode::KeyPackage => Self::KeyPackage(
                 ciborium::de::from_reader(bytes)
                     .map_err(|e| ProtocolError::CborDecode(e.to_string()))?,

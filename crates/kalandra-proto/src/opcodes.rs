@@ -54,6 +54,10 @@ pub enum Opcode {
     Ping = 0x0004,
     /// Keepalive response
     Pong = 0x0005,
+    /// Request sync for a room (client → server)
+    SyncRequest = 0x0006,
+    /// Sync response with frames (server → client)
+    SyncResponse = 0x0007,
     /// Error frame
     Error = 0x00FF,
 
@@ -158,6 +162,8 @@ impl Opcode {
             0x0003 => Some(Self::Goodbye),
             0x0004 => Some(Self::Ping),
             0x0005 => Some(Self::Pong),
+            0x0006 => Some(Self::SyncRequest),
+            0x0007 => Some(Self::SyncResponse),
             0x00FF => Some(Self::Error),
 
             0x1000 => Some(Self::KeyPackage),
