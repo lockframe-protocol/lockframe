@@ -390,8 +390,13 @@ where
                 // We created this commit - merge our pending state
                 group.merge_pending_commit()?;
             } else {
-                // TODO: Process commits from other senders. Right now, the
-                // server is always the commiter.
+                // MLS actions from peer commit are primarily logging (epoch advanced). These
+                // are handled via tracing. The critical outcome is that
+                // process_message() called merge_staged_commit() to advance our
+                // epoch
+                let commit_frame =
+                    frame_for_mls.as_ref().expect("invariant: frame_for_mls is Some");
+                let _mls_actions = group.process_message(commit_frame.clone())?;
             }
 
             // Export the updated MLS state for persistence
