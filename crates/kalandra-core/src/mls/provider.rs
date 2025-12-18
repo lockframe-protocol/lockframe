@@ -32,6 +32,13 @@ impl<E: Environment> MlsProvider<E> {
             storage: MemoryStorage::default(),
         }
     }
+
+    /// Get the current time from the environment.
+    ///
+    /// Used for tracking when commits are sent for timeout detection.
+    pub fn now(&self) -> E::Instant {
+        self.rand.env.now()
+    }
 }
 
 /// RNG adapter that delegates to our Environment trait.

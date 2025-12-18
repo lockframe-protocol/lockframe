@@ -119,8 +119,7 @@ pub struct MlsGroup<E: Environment> {
 /// Tracks a commit we sent that's waiting for sequencer acceptance.
 #[derive(Debug, Clone)]
 struct PendingCommit<I> {
-    /// Epoch this commit will create
-    #[allow(dead_code)] // Will be used when we implement commit handling
+    /// Epoch this commit will create when accepted
     target_epoch: u64,
 
     /// When we sent it (for timeout detection)
@@ -272,9 +271,22 @@ impl<E: Environment> MlsGroup<E> {
     ///
     /// Returns an error if there's no pending commit or if merging fails.
     pub fn merge_pending_commit(&mut self) -> Result<(), MlsError> {
+        let expected_epoch = self
+            .pending_commit
+            .as_ref()
+            .map(|p| p.target_epoch)
+            .ok_or_else(|| MlsError::Crypto("No pending commit to merge".to_string()))?;
+
         self.mls_group
             .merge_pending_commit(&self.provider)
             .map_err(|e| MlsError::Crypto(format!("Failed to merge pending commit: {}", e)))?;
+
+        let actual_epoch = self.epoch();
+        debug_assert_eq!(
+            actual_epoch, expected_epoch,
+            "Epoch after merge ({}) doesn't match expected ({})",
+            actual_epoch, expected_epoch
+        );
 
         self.pending_commit = None;
 
@@ -675,10 +687,16 @@ impl<E: Environment> MlsGroup<E> {
     ///
     /// Returns an error if commit creation fails.
     fn add_members(&mut self, key_packages: Vec<KeyPackage>) -> Result<Vec<MlsAction>, MlsError> {
+        let target_epoch = self.epoch() + 1;
+        let now = self.provider.now();
+
         let (mls_message_out, welcome, _group_info) = self
             .mls_group
             .add_members(&self.provider, &self.signer, &key_packages)
             .map_err(|e| MlsError::Crypto(format!("Failed to add members: {}", e)))?;
+
+        // Track the pending commit for timeout detection
+        self.pending_commit = Some(PendingCommit { target_epoch, sent_at: now });
 
         let mut actions = Vec::new();
 
@@ -733,12 +751,18 @@ impl<E: Environment> MlsGroup<E> {
             ));
         }
 
+        let target_epoch = self.epoch() + 1;
+        let now = self.provider.now();
+
         let leaf_indices = self.member_ids_to_leaf_indices(member_ids)?;
 
         let (mls_message_out, _welcome_option, _group_info) = self
             .mls_group
             .remove_members(&self.provider, &self.signer, &leaf_indices)
             .map_err(|e| MlsError::Crypto(format!("Failed to remove members: {}", e)))?;
+
+        // Track the pending commit for timeout detection
+        self.pending_commit = Some(PendingCommit { target_epoch, sent_at: now });
 
         let mut actions = Vec::new();
 
