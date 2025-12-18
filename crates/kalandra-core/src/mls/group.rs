@@ -278,6 +278,18 @@ impl<E: Environment> MlsGroup<E> {
             .unwrap_or(false)
     }
 
+    /// Clear a pending commit without merging it.
+    ///
+    /// This is used when a commit times out and we request a sync from the
+    /// server. The sync response will bring us up to date without needing
+    /// to merge our original commit (which may have been superseded).
+    ///
+    /// Also clear OpenMLS pending commit to avoid stale state.
+    pub fn clear_pending_commit(&mut self) {
+        self.pending_commit = None;
+        let _ = self.mls_group.clear_pending_commit(self.provider.storage()); // best-effort cleanup
+    }
+
     /// Merge the pending commit after it has been confirmed by the sequencer.
     ///
     /// This is called when we created a commit (e.g., via add_members) and

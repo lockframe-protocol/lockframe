@@ -517,17 +517,22 @@ impl<E: Environment> Client<E> {
     /// Handle tick (timeout processing).
     ///
     /// Checks all rooms for pending commits that have timed out.
-    /// For rooms with timed-out commits, emits `RequestSync` actions.
+    /// For rooms with timed-out commits, clears the pending state and emits
+    /// `RequestSync` actions.
     fn handle_tick(&mut self, now: E::Instant) -> Result<Vec<ClientAction>, ClientError>
     where
         E::Instant: Copy + Ord + std::ops::Sub<Output = std::time::Duration>,
     {
         let mut actions = Vec::new();
 
-        for (&room_id, room) in &self.rooms {
+        for (&room_id, room) in &mut self.rooms {
             if room.mls_group.is_commit_timeout(now, COMMIT_TIMEOUT) {
                 let current_epoch = room.mls_group.epoch();
-                // Commit timed out, request sync from server to catch up
+
+                // Clear the pending commit to prevent repeated RequestSync on each tick
+                room.mls_group.clear_pending_commit();
+
+                // Request sync from server to catch up
                 actions.push(ClientAction::RequestSync {
                     room_id,
                     from_epoch: current_epoch,
