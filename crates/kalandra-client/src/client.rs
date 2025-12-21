@@ -7,7 +7,7 @@ use std::{collections::HashMap, time::Duration};
 
 use kalandra_core::{
     env::Environment,
-    mls::{MlsAction, MlsGroup, RoomId},
+    mls::{MlsAction, MlsGroup, PendingJoinState, RoomId},
 };
 use kalandra_crypto::{EncryptedMessage as CryptoEncryptedMessage, NONCE_RANDOM_SIZE};
 use kalandra_proto::{
@@ -64,6 +64,9 @@ struct RoomState<E: Environment> {
     my_leaf_index: u32,
 }
 
+/// State stored between KeyPackage generation and Welcome receipt.
+type PendingJoin<E> = PendingJoinState<E>;
+
 /// Client state machine.
 ///
 /// Manages multiple room memberships and handles message encryption/decryption.
@@ -79,6 +82,10 @@ pub struct Client<E: Environment> {
     /// Active room memberships.
     rooms: HashMap<RoomId, RoomState<E>>,
 
+    /// Pending join attempts (KeyPackage generated, waiting for Welcome).
+    /// Each entry contains the crypto state needed to decrypt a Welcome.
+    pending_joins: Vec<PendingJoin<E>>,
+
     /// Environment for time/randomness.
     env: E,
 }
@@ -86,7 +93,7 @@ pub struct Client<E: Environment> {
 impl<E: Environment> Client<E> {
     /// Create a new client with the given identity.
     pub fn new(env: E, identity: ClientIdentity) -> Self {
-        Self { identity, rooms: HashMap::new(), env }
+        Self { identity, rooms: HashMap::new(), pending_joins: Vec::new(), env }
     }
 
     /// Get the client's sender ID.
@@ -112,18 +119,22 @@ impl<E: Environment> Client<E> {
     /// Generate a KeyPackage for this client to join a room.
     ///
     /// The returned KeyPackage should be sent to the room creator who will
-    /// add this client via `AddMembers`. The caller is responsible for
-    /// keeping the KeyPackage until a Welcome message is received.
+    /// add this client via `AddMembers`. The client stores the cryptographic
+    /// state internally and uses it when the Welcome message arrives.
     ///
-    /// Return a tuple of (serialized KeyPackage bytes, KeyPackage hash ref).
-    /// The hash reference can be used to track which KeyPackage was used.
+    /// Returns (serialized KeyPackage bytes, KeyPackage hash ref).
     ///
     /// # Errors
     ///
     /// Returns an error if KeyPackage generation fails.
-    pub fn generate_key_package(&self) -> Result<(Vec<u8>, Vec<u8>), ClientError> {
-        MlsGroup::generate_key_package(self.env.clone(), self.identity.sender_id)
-            .map_err(|e| ClientError::Mls { reason: e.to_string() })
+    pub fn generate_key_package(&mut self) -> Result<(Vec<u8>, Vec<u8>), ClientError> {
+        let (kp_bytes, hash_ref, pending_state) =
+            MlsGroup::generate_key_package(self.env.clone(), self.identity.sender_id)
+                .map_err(|e| ClientError::Mls { reason: e.to_string() })?;
+
+        self.pending_joins.push(pending_state);
+
+        Ok((kp_bytes, hash_ref))
     }
 
     /// Process an event and return resulting actions.
@@ -347,6 +358,24 @@ impl<E: Environment> Client<E> {
         Ok(actions)
     }
 
+    /// Try to join a room using a pending KeyPackage state.
+    ///
+    /// Uses the most recently generated KeyPackage state. On success, the state
+    /// is consumed. On failure, the state is also consumed (caller should
+    /// generate a new KeyPackage if needed).
+    fn try_join_from_welcome(
+        &mut self,
+        room_id: RoomId,
+        welcome_bytes: &[u8],
+    ) -> Result<(MlsGroup<E>, Vec<MlsAction>), ClientError> {
+        let pending_state = self.pending_joins.pop().ok_or_else(|| ClientError::Mls {
+            reason: "No pending KeyPackage state - call generate_key_package first".to_string(),
+        })?;
+
+        MlsGroup::join_from_welcome(room_id, self.identity.sender_id, welcome_bytes, pending_state)
+            .map_err(|e| ClientError::Mls { reason: e.to_string() })
+    }
+
     /// Handle incoming Welcome frame.
     ///
     /// When we receive a Welcome message from another member (who added us),
@@ -360,13 +389,7 @@ impl<E: Environment> Client<E> {
             return Err(ClientError::RoomAlreadyExists { room_id });
         }
 
-        let (mls_group, mls_actions) = MlsGroup::join_from_welcome(
-            self.env.clone(),
-            room_id,
-            self.identity.sender_id,
-            &frame.payload,
-        )
-        .map_err(|e| ClientError::Mls { reason: e.to_string() })?;
+        let (mls_group, mls_actions) = self.try_join_from_welcome(room_id, &frame.payload)?;
 
         let sender_keys = self.initialize_sender_keys(&mls_group)?;
         let my_leaf_index = mls_group.own_leaf_index();
@@ -393,13 +416,7 @@ impl<E: Environment> Client<E> {
             return Err(ClientError::RoomAlreadyExists { room_id });
         }
 
-        let (mls_group, mls_actions) = MlsGroup::join_from_welcome(
-            self.env.clone(),
-            room_id,
-            self.identity.sender_id,
-            welcome,
-        )
-        .map_err(|e| ClientError::Mls { reason: e.to_string() })?;
+        let (mls_group, mls_actions) = self.try_join_from_welcome(room_id, welcome)?;
 
         let sender_keys = self.initialize_sender_keys(&mls_group)?;
         let my_leaf_index = mls_group.own_leaf_index();

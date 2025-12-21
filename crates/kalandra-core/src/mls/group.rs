@@ -22,6 +22,16 @@ pub type RoomId = u128;
 /// Member identifier within a group.
 pub type MemberId = u64;
 
+/// Opaque state needed to process a Welcome message.
+///
+/// This is returned by [`MlsGroup::generate_key_package`] and must be passed
+/// to [`MlsGroup::join_from_welcome`] when the Welcome arrives. It contains
+/// the private key material needed to decrypt the Welcome.
+pub struct PendingJoinState<E: Environment> {
+    provider: MlsProvider<E>,
+    signer: SignatureKeyPair,
+}
+
 /// Actions that MLS group operations can produce.
 ///
 /// The application layer is responsible for executing these actions.
@@ -472,61 +482,6 @@ impl<E: Environment> MlsGroup<E> {
         self.add_members(key_packages)
     }
 
-    /// Join a group via a Welcome message.
-    ///
-    /// Creates a new MlsGroup instance by processing a Welcome message received
-    /// from an existing group member. The Welcome contains the group secrets
-    /// needed to participate.
-    ///
-    /// Returns a new MlsGroup instance initialized at the current group epoch.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if:
-    /// - Welcome deserialization fails
-    /// - Welcome processing fails (wrong KeyPackage, crypto error, etc.)
-    pub fn join_from_welcome(
-        env: E,
-        room_id: RoomId,
-        member_id: MemberId,
-        welcome_bytes: &[u8],
-    ) -> Result<(Self, Vec<MlsAction>), MlsError> {
-        let provider = MlsProvider::new(env);
-        let ciphersuite = Ciphersuite::MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519;
-
-        let signer = SignatureKeyPair::new(ciphersuite.signature_algorithm())
-            .map_err(|e| MlsError::Crypto(format!("Failed to generate keypair: {}", e)))?;
-
-        let mls_message =
-            MlsMessageIn::tls_deserialize(&mut welcome_bytes.as_ref()).map_err(|e| {
-                MlsError::Serialization(format!("Failed to deserialize Welcome: {}", e))
-            })?;
-
-        let welcome = match mls_message.extract() {
-            MlsMessageBodyIn::Welcome(w) => w,
-            _ => return Err(MlsError::Serialization("Message is not a Welcome".to_string())),
-        };
-
-        let group_config = MlsGroupJoinConfig::builder().build();
-
-        let mls_group = StagedWelcome::new_from_welcome(&provider, &group_config, welcome, None)
-            .map_err(|e| MlsError::Crypto(format!("Failed to stage Welcome: {}", e)))?
-            .into_group(&provider)
-            .map_err(|e| MlsError::Crypto(format!("Failed to join group from Welcome: {}", e)))?;
-
-        let epoch = mls_group.epoch().as_u64();
-        let group = Self { room_id, member_id, mls_group, signer, provider, pending_commit: None };
-
-        let actions = vec![MlsAction::Log {
-            message: format!(
-                "Joined group {} at epoch {} via Welcome (member_id={})",
-                room_id, epoch, member_id
-            ),
-        }];
-
-        Ok((group, actions))
-    }
-
     /// Export the current group state for storage.
     ///
     /// Returns the serialized OpenMLS group state that can be stored
@@ -584,7 +539,9 @@ impl<E: Environment> MlsGroup<E> {
     /// add this client to their group. The KeyPackage is signed with this
     /// client's credential.
     ///
-    /// Returns a tuple (KeyPackage bytes, KeyPackage hash ref)
+    /// Returns (key_package_bytes, hash_ref, pending_state). The
+    /// `pending_state` must be kept and passed to
+    /// [`Self::join_from_welcome`] when the Welcome message is received.
     ///
     /// # Errors
     ///
@@ -592,7 +549,7 @@ impl<E: Environment> MlsGroup<E> {
     pub fn generate_key_package(
         env: E,
         member_id: MemberId,
-    ) -> Result<(Vec<u8>, Vec<u8>), MlsError> {
+    ) -> Result<(Vec<u8>, Vec<u8>, PendingJoinState<E>), MlsError> {
         let provider = MlsProvider::new(env);
         let ciphersuite = Ciphersuite::MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519;
 
@@ -619,59 +576,33 @@ impl<E: Environment> MlsGroup<E> {
             .hash_ref(provider.crypto())
             .map_err(|e| MlsError::Crypto(format!("Failed to compute KeyPackage hash: {}", e)))?;
 
-        Ok((serialized, hash_ref.as_slice().to_vec()))
+        let pending_state = PendingJoinState { provider, signer };
+        Ok((serialized, hash_ref.as_slice().to_vec(), pending_state))
     }
 
-    /// Generate a KeyPackage and return with provider state for later use.
+    /// Join a group via a Welcome message.
     ///
-    /// Unlike `generate_key_package`, this returns the provider and signer
-    /// so that `join_from_welcome_with_state` can access the private key.
+    /// Creates a new MlsGroup instance by processing a Welcome message received
+    /// from an existing group member. The Welcome contains the group secrets
+    /// needed to participate.
     ///
-    /// Returns (key_package_bytes, hash_ref, provider, signer)
-    pub fn generate_key_package_with_state(
-        env: E,
-        member_id: MemberId,
-    ) -> Result<(Vec<u8>, Vec<u8>, MlsProvider<E>, SignatureKeyPair), MlsError> {
-        let provider = MlsProvider::new(env);
-        let ciphersuite = Ciphersuite::MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519;
-
-        let signer = SignatureKeyPair::new(ciphersuite.signature_algorithm())
-            .map_err(|e| MlsError::Crypto(format!("Failed to generate keypair: {}", e)))?;
-
-        let credential = BasicCredential::new(member_id.to_le_bytes().to_vec());
-        let credential_with_key = CredentialWithKey {
-            credential: credential.into(),
-            signature_key: signer.public().into(),
-        };
-
-        let key_package_bundle = KeyPackage::builder()
-            .build(ciphersuite, &provider, &signer, credential_with_key)
-            .map_err(|e| MlsError::Crypto(format!("Failed to build KeyPackage: {}", e)))?;
-
-        let key_package = key_package_bundle.key_package();
-
-        let serialized = key_package.tls_serialize_detached().map_err(|e| {
-            MlsError::Serialization(format!("Failed to serialize KeyPackage: {}", e))
-        })?;
-
-        let hash_ref = key_package
-            .hash_ref(provider.crypto())
-            .map_err(|e| MlsError::Crypto(format!("Failed to compute KeyPackage hash: {}", e)))?;
-
-        Ok((serialized, hash_ref.as_slice().to_vec(), provider, signer))
-    }
-
-    /// Join a group from a Welcome message using pre-existing provider state.
+    /// The `pending_state` must be the one returned by
+    /// [`Self::generate_key_package`] for the KeyPackage that was used to
+    /// create this Welcome.
     ///
-    /// This variant accepts a provider and signer that were used to generate
-    /// the KeyPackage, ensuring the private key is available for decryption.
-    pub fn join_from_welcome_with_state(
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - Welcome deserialization fails
+    /// - Welcome processing fails (wrong KeyPackage, crypto error, etc.)
+    pub fn join_from_welcome(
         room_id: RoomId,
         member_id: MemberId,
         welcome_bytes: &[u8],
-        provider: MlsProvider<E>,
-        signer: SignatureKeyPair,
+        pending_state: PendingJoinState<E>,
     ) -> Result<(Self, Vec<MlsAction>), MlsError> {
+        let PendingJoinState { provider, signer } = pending_state;
+
         let mls_message =
             MlsMessageIn::tls_deserialize(&mut welcome_bytes.as_ref()).map_err(|e| {
                 MlsError::Serialization(format!("Failed to deserialize Welcome: {}", e))
@@ -971,9 +902,8 @@ mod tests {
 
         // Bob generates a KeyPackage (keeping provider state for later)
         let bob_id = 100u64;
-        let (bob_kp_bytes, _, bob_provider, bob_signer) =
-            MlsGroup::generate_key_package_with_state(env.clone(), bob_id)
-                .expect("bob generate key package");
+        let (bob_kp_bytes, _, bob_pending) =
+            MlsGroup::generate_key_package(env.clone(), bob_id).expect("bob generate key package");
 
         // Alice adds Bob - creates Commit and Welcome
         let add_actions =
@@ -992,14 +922,9 @@ mod tests {
         alice_group.merge_pending_commit().expect("alice merge commit");
 
         // Bob joins via Welcome (using his stored provider state)
-        let (mut bob_group, _) = MlsGroup::join_from_welcome_with_state(
-            room_id,
-            bob_id,
-            &welcome_frame.payload,
-            bob_provider,
-            bob_signer,
-        )
-        .expect("bob join via welcome");
+        let (mut bob_group, _) =
+            MlsGroup::join_from_welcome(room_id, bob_id, &welcome_frame.payload, bob_pending)
+                .expect("bob join via welcome");
 
         // Alice creates a message
         let alice_message_actions =
@@ -1049,9 +974,8 @@ mod tests {
 
         // Bob generates a KeyPackage with his member_id
         let bob_id = 100u64;
-        let (bob_kp_bytes, _, _, _) =
-            MlsGroup::generate_key_package_with_state(env.clone(), bob_id)
-                .expect("bob generate key package");
+        let (bob_kp_bytes, _, _) =
+            MlsGroup::generate_key_package(env.clone(), bob_id).expect("bob generate key package");
 
         // Alice adds Bob
         let add_actions =
@@ -1086,9 +1010,8 @@ mod tests {
 
         // Bob generates a KeyPackage
         let bob_id = 100u64;
-        let (bob_kp_bytes, _, _, _) =
-            MlsGroup::generate_key_package_with_state(env.clone(), bob_id)
-                .expect("bob generate key package");
+        let (bob_kp_bytes, _, _) =
+            MlsGroup::generate_key_package(env.clone(), bob_id).expect("bob generate key package");
 
         // Alice adds Bob
         alice_group.add_members_from_bytes(&[bob_kp_bytes]).expect("alice add bob");
@@ -1177,9 +1100,8 @@ mod tests {
 
         // Bob generates a KeyPackage and joins
         let bob_id = 100u64;
-        let (bob_kp_bytes, _, bob_provider, bob_signer) =
-            MlsGroup::generate_key_package_with_state(env.clone(), bob_id)
-                .expect("bob generate key package");
+        let (bob_kp_bytes, _, bob_pending) =
+            MlsGroup::generate_key_package(env.clone(), bob_id).expect("bob generate key package");
 
         // Alice adds Bob
         let add_actions =
@@ -1196,14 +1118,9 @@ mod tests {
             .expect("should have welcome");
 
         // Bob joins via Welcome
-        let (mut bob_group, _) = MlsGroup::join_from_welcome_with_state(
-            room_id,
-            bob_id,
-            &welcome_frame.payload,
-            bob_provider,
-            bob_signer,
-        )
-        .expect("bob join via welcome");
+        let (mut bob_group, _) =
+            MlsGroup::join_from_welcome(room_id, bob_id, &welcome_frame.payload, bob_pending)
+                .expect("bob join via welcome");
 
         // Bob leaves the group (creates a proposal, not a commit)
         let leave_actions = bob_group.leave_group().expect("bob leave group");

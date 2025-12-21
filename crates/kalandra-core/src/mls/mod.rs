@@ -29,7 +29,7 @@ pub mod validator;
 
 pub use constants::MAX_EPOCH;
 pub use error::MlsError;
-pub use group::{MemberId, MlsAction, MlsGroup, RoomId};
+pub use group::{MemberId, MlsAction, MlsGroup, PendingJoinState, RoomId};
 pub use provider::MlsProvider;
 pub use state::MlsGroupState;
 pub use validator::{MlsValidator, ValidationResult};

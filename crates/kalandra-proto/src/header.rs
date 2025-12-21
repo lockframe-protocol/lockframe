@@ -317,6 +317,10 @@ impl FrameHeader {
 // Manual Debug implementation (can't derive due to packed repr)
 impl std::fmt::Debug for FrameHeader {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let context_value = u64::from_be_bytes(self.context_id);
+        let context_label =
+            if self.opcode_enum() == Some(Opcode::Welcome) { "recipient_id" } else { "log_index" };
+
         f.debug_struct("FrameHeader")
             .field("magic", &format!("{:#010x}", self.magic()))
             .field("version", &self.version())

@@ -86,8 +86,8 @@ fn remove_members_sets_pending_commit() {
     // Create group and add a member first
     let (mut group, _) = MlsGroup::new(env.clone(), room_id, creator_id).unwrap();
 
-    let (kp_bytes, _, provider, signer) =
-        MlsGroup::generate_key_package_with_state(env.clone(), member_to_add).unwrap();
+    let (kp_bytes, _, _provider, _signer) =
+        MlsGroup::generate_key_package(env.clone(), member_to_add).unwrap();
 
     group.add_members_from_bytes(&[kp_bytes]).unwrap();
     group.merge_pending_commit().unwrap();
