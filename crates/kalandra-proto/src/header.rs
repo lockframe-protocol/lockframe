@@ -66,8 +66,11 @@ pub struct FrameHeader {
     room_id: [u8; 16],  // UUID (128-bit)
     sender_id: [u8; 8], // u64 sender identifier
 
-    // Ordering context (16 bytes: 40-55)
-    log_index: [u8; 8],     // u64 sequence number OR recipient_id (Welcome only)
+    // Ordering/routing context (16 bytes: 40-55)
+    // Opcode-dependent field:
+    //   - Sequenced frames (AppMessage, Commit, Proposal): log_index (sequence number)
+    //   - Welcome frames: recipient_id (target member for routing)
+    context_id: [u8; 8],
     hlc_timestamp: [u8; 8], // u64 hybrid logical clock
 
     // MLS binding (8 bytes: 56-63)
@@ -228,23 +231,32 @@ impl FrameHeader {
         u64::from_be_bytes(self.sender_id)
     }
 
-    /// Get the log index (sequence number).
+    /// Get the log index (sequence number) for sequenced frames.
     ///
-    /// For `Opcode::Welcome` frames, use `recipient_id()` instead - the
-    /// log_index field is reused to store the recipient for routing.
+    /// This field is only meaningful for sequenced opcodes (AppMessage, Commit,
+    /// Proposal, etc.). For Welcome frames, use [`recipient_id()`] instead.
+    /// Debug builds will assert if called on Welcome frames.
     #[must_use]
     pub fn log_index(&self) -> u64 {
-        u64::from_be_bytes(self.log_index)
+        debug_assert!(
+            self.opcode_enum() != Some(Opcode::Welcome),
+            "log_index() called on Welcome frame - use recipient_id() instead"
+        );
+        u64::from_be_bytes(self.context_id)
     }
 
     /// Get the recipient ID for Welcome frames.
     ///
-    /// For `Opcode::Welcome`, the log_index field is reused to store the
-    /// recipient's member ID for server-side routing. For other opcodes,
-    /// this returns the same value as `log_index()`.
+    /// This field identifies the target member for Welcome routing. It is only
+    /// meaningful for Welcome frames. For sequenced frames, use [`log_index()`]
+    /// instead. Debug builds will assert if called on non-Welcome frames.
     #[must_use]
     pub fn recipient_id(&self) -> u64 {
-        u64::from_be_bytes(self.log_index)
+        debug_assert!(
+            self.opcode_enum() == Some(Opcode::Welcome),
+            "recipient_id() called on non-Welcome frame - use log_index() instead"
+        );
+        u64::from_be_bytes(self.context_id)
     }
 
     /// Get the HLC timestamp
@@ -280,19 +292,30 @@ impl FrameHeader {
 
     /// Set the log index (for server sequencing).
     ///
-    /// This method is used by the sequencer to assign monotonic log indices
-    /// to frames after validation.
+    /// Used by the sequencer to assign monotonic log indices to frames after
+    /// validation. Only valid for sequenced opcodes (AppMessage, Commit, etc.).
+    /// For Welcome frames, use [`set_recipient_id()`] instead.
+    /// Debug builds will assert if called on Welcome frames.
     pub fn set_log_index(&mut self, log_index: u64) {
-        self.log_index = log_index.to_be_bytes();
+        debug_assert!(
+            self.opcode_enum() != Some(Opcode::Welcome),
+            "set_log_index() called on Welcome frame - use set_recipient_id() instead"
+        );
+        self.context_id = log_index.to_be_bytes();
     }
 
     /// Set the recipient ID for Welcome frames.
     ///
-    /// For `Opcode::Welcome`, the log_index field is reused to store the
-    /// recipient's member ID. The server uses this to route the Welcome
-    /// to the correct session.
+    /// The server uses this to route the Welcome to the correct session.
+    /// Only valid for Welcome frames. For sequenced frames, use
+    /// [`set_log_index()`] instead. Debug builds will assert if called on
+    /// non-Welcome frames.
     pub fn set_recipient_id(&mut self, recipient_id: u64) {
-        self.log_index = recipient_id.to_be_bytes();
+        debug_assert!(
+            self.opcode_enum() == Some(Opcode::Welcome),
+            "set_recipient_id() called on non-Welcome frame - use set_log_index() instead"
+        );
+        self.context_id = recipient_id.to_be_bytes();
     }
 
     /// Set the sender ID
@@ -329,7 +352,7 @@ impl std::fmt::Debug for FrameHeader {
             .field("request_id", &self.request_id())
             .field("room_id", &format!("{:#034x}", self.room_id()))
             .field("sender_id", &self.sender_id())
-            .field("log_index", &self.log_index())
+            .field(context_label, &context_value)
             .field("hlc_timestamp", &self.hlc_timestamp())
             .field("epoch", &self.epoch())
             .field("payload_size", &self.payload_size())
@@ -371,7 +394,7 @@ mod tests {
                 arbitrary_bytes::<4>(),               // request_id (u32)
                 arbitrary_bytes::<16>(),              // room_id
                 arbitrary_bytes::<8>(),               // sender_id
-                arbitrary_bytes::<8>(),               // log_index
+                arbitrary_bytes::<8>(),               // context_id
                 arbitrary_bytes::<8>(),               // hlc_timestamp
                 arbitrary_bytes::<8>(),               // epoch
                 0u32..=FrameHeader::MAX_PAYLOAD_SIZE, // payload_size
@@ -384,7 +407,7 @@ mod tests {
                         request_id,
                         room_id,
                         sender_id,
-                        log_index,
+                        context_id,
                         hlc_timestamp,
                         epoch,
                         payload_size,
@@ -399,7 +422,7 @@ mod tests {
                             payload_size: payload_size.to_be_bytes(),
                             room_id,
                             sender_id,
-                            log_index,
+                            context_id,
                             hlc_timestamp,
                             epoch,
                             signature,

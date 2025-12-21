@@ -229,7 +229,7 @@ fn process_commit_advances_epoch() {
     // Step 3: Generate a KeyPackage for a new member
     use kalandra_core::mls::MlsGroup;
     let new_member_id = 100u64;
-    let (key_package_bytes, _hash) =
+    let (key_package_bytes, _hash, _pending_state) =
         MlsGroup::generate_key_package(env.clone(), new_member_id).expect("generate key package");
 
     // Step 4: Add member - creates a Commit and pending state

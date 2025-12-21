@@ -65,7 +65,13 @@ fn create_frame_for_opcode(opcode: Opcode) -> Frame {
     header.set_room_id(1);
     header.set_sender_id(1);
     header.set_epoch(0);
-    header.set_log_index(0);
+
+    // Use correct setter based on opcode (context_id has different semantics)
+    if opcode == Opcode::Welcome {
+        header.set_recipient_id(0);
+    } else {
+        header.set_log_index(0);
+    }
 
     // Create with empty payload - we're testing connection state machine, not
     // payloads

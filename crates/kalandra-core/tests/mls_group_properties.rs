@@ -56,8 +56,9 @@ fn add_members_sets_pending_commit() {
     assert!(!group.has_pending_commit(), "New group should not have pending commit");
 
     // Generate a key package for the new member
-    let (key_package_bytes, _hash) = MlsGroup::generate_key_package(env.clone(), new_member_id)
-        .expect("key package generation should succeed");
+    let (key_package_bytes, _hash, _pending_state) =
+        MlsGroup::generate_key_package(env.clone(), new_member_id)
+            .expect("key package generation should succeed");
 
     // Add the new member
     let actions =
@@ -86,7 +87,7 @@ fn remove_members_sets_pending_commit() {
     // Create group and add a member first
     let (mut group, _) = MlsGroup::new(env.clone(), room_id, creator_id).unwrap();
 
-    let (kp_bytes, _, _provider, _signer) =
+    let (kp_bytes, _, _pending_state) =
         MlsGroup::generate_key_package(env.clone(), member_to_add).unwrap();
 
     group.add_members_from_bytes(&[kp_bytes]).unwrap();
@@ -107,10 +108,6 @@ fn remove_members_sets_pending_commit() {
     // Should produce SendCommit action
     let has_commit = actions.iter().any(|a| matches!(a, MlsAction::SendCommit(_)));
     assert!(has_commit, "remove_members should produce SendCommit action");
-
-    // Cleanup - just to ensure test isolation
-    drop(provider);
-    drop(signer);
 }
 
 /// INVARIANT: Epoch increases by exactly 1 after merging a commit.
@@ -131,8 +128,9 @@ fn merge_commit_advances_epoch_by_one() {
     assert_eq!(epoch_before, 0, "New group should start at epoch 0");
 
     // Generate key package and add member
-    let (key_package_bytes, _hash) = MlsGroup::generate_key_package(env.clone(), new_member_id)
-        .expect("key package generation should succeed");
+    let (key_package_bytes, _hash, _pending_state) =
+        MlsGroup::generate_key_package(env.clone(), new_member_id)
+            .expect("key package generation should succeed");
 
     group.add_members_from_bytes(&[key_package_bytes]).expect("add_members should succeed");
 
@@ -164,7 +162,7 @@ fn pending_commit_cleared_after_merge() {
 
     let (mut group, _) = MlsGroup::new(env.clone(), room_id, creator_id).unwrap();
 
-    let (key_package_bytes, _hash) =
+    let (key_package_bytes, _hash, _pending_state) =
         MlsGroup::generate_key_package(env.clone(), new_member_id).unwrap();
 
     group.add_members_from_bytes(&[key_package_bytes]).unwrap();
@@ -188,7 +186,7 @@ fn commit_timeout_detection() {
 
     let (mut group, _) = MlsGroup::new(env.clone(), room_id, creator_id).unwrap();
 
-    let (key_package_bytes, _) =
+    let (key_package_bytes, _, _pending_state) =
         MlsGroup::generate_key_package(env.clone(), new_member_id).unwrap();
 
     group.add_members_from_bytes(&[key_package_bytes]).unwrap();
@@ -220,7 +218,8 @@ fn sequential_commits_advance_epoch_correctly() {
         let member_id = 100 + i;
         let epoch_before = group.epoch();
 
-        let (kp_bytes, _) = MlsGroup::generate_key_package(env.clone(), member_id).unwrap();
+        let (kp_bytes, _, _pending_state) =
+            MlsGroup::generate_key_package(env.clone(), member_id).unwrap();
         group.add_members_from_bytes(&[kp_bytes]).unwrap();
         group.merge_pending_commit().unwrap();
 

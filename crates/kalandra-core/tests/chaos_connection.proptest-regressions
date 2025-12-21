@@ -5,3 +5,6 @@
 # It is recommended to check this file in to source control so that
 # everyone who runs the test benefits from these saved cases.
 cc 3097798a8ce71916004deb67a577cc251e32b9c7da13032936112900386c6d59 # shrinks to idle_timeout_secs = 1
+cc 7c3b9e7beed01cba7dd7634b9bb5497c9bb1bc6089d65cd0b0c494767a7941df # shrinks to opcode = Welcome
+cc 91c15342a7c82ad699f2f75c7a2180599c51217b8e5a3f5a7a5f94d1187263aa # shrinks to opcodes = [Welcome]
+cc 7a25b3cd5fa9e40c9dd0f261dd09f765be23483e38840999279005608f2b0f38 # shrinks to opcodes = [Welcome]

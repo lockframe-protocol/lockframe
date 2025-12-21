@@ -143,7 +143,6 @@ fn validate_frame_structure(frame: &Frame) -> Result<(), SequencerError> {
         return Err(SequencerError::Validation("room_id is zero (uninitialized?)".to_string()));
     }
 
-    // Check epoch is within reasonable bounds
     if frame.header.epoch() > MAX_EPOCH {
         return Err(SequencerError::Validation(format!(
             "epoch {} exceeds MAX_EPOCH {}",
@@ -165,11 +164,10 @@ impl Sequencer {
     ///
     /// # Invariants
     ///
-    /// - **Pre**: Frame header must be valid (magic, version, etc.)
-    /// - **Pre**: Frame must be validated by caller (RoomManager)
-    /// - **Post**: If accepted, frame.log_index will be set to next available
-    ///   index
-    /// - **Post**: room.next_log_index will be incremented
+    /// - Pre: Frame header must be valid (magic, version, etc.)
+    /// - Pre: Frame must be validated by caller (RoomManager)
+    /// - Post: If accepted, frame.log_index will be set to next available index
+    /// - Post: room.next_log_index will be incremented
     ///
     /// # Errors
     ///
@@ -182,6 +180,14 @@ impl Sequencer {
         validate_frame_structure(&frame)?;
 
         let room_id = frame.header.room_id();
+
+        // Welcome frames are NOT sequenced. They use recipient_id for point-to-point
+        // delivery and are not stored in the log. The driver handles Welcome frames
+        // specially (subscribes recipient to room).
+        if frame.header.opcode_enum() == Some(kalandra_proto::Opcode::Welcome) {
+            // broadcast to room, no sequencing or storage
+            return Ok(vec![SequencerAction::BroadcastToRoom { room_id, frame }]);
+        }
 
         if !self.rooms.contains_key(&room_id) {
             let latest_index = storage.latest_log_index(room_id).map_err(|e| {
@@ -209,10 +215,6 @@ impl Sequencer {
         }
 
         let room = self.rooms.get_mut(&room_id).expect("room must exist after initialization");
-
-        // MLS validation is now handled by RoomManager before calling this method
-        // Sequencer only assigns log indices
-
         let log_index = room.next_log_index;
 
         room.next_log_index = room.next_log_index.checked_add(1).ok_or_else(|| {
@@ -228,9 +230,6 @@ impl Sequencer {
 
         debug_assert_eq!(sequenced_frame.header.log_index(), log_index);
 
-        // Return actions (driver executes them)
-        // Note: Frame clones are cheap - payload is Arc-based (Bytes), only header is
-        // copied
         let frame_for_actions = sequenced_frame;
         Ok(vec![
             SequencerAction::AcceptFrame { room_id, log_index, frame: frame_for_actions.clone() },
@@ -265,7 +264,6 @@ fn rebuild_frame_with_index(original: Frame, log_index: u64) -> Result<Frame, Se
     let mut new_header = original.header;
     new_header.set_log_index(log_index);
 
-    // Reuse payload bytes (Bytes::clone is cheap - Arc increment)
     Ok(Frame::new(new_header, original.payload.clone()))
 }
 

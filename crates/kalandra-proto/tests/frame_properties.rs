@@ -37,14 +37,18 @@ fn arbitrary_header() -> impl Strategy<Value = FrameHeader> {
         any::<u128>(), // room_id
         any::<u64>(),  // sender_id
         any::<u64>(),  // epoch
-        any::<u64>(),  // log_index
+        any::<u64>(),  // context_id (log_index or recipient_id depending on opcode)
     )
-        .prop_map(|(opcode, room_id, sender_id, epoch, log_index)| {
+        .prop_map(|(opcode, room_id, sender_id, epoch, context_id)| {
             let mut header = FrameHeader::new(opcode);
             header.set_room_id(room_id);
             header.set_sender_id(sender_id);
             header.set_epoch(epoch);
-            header.set_log_index(log_index);
+            if opcode == Opcode::Welcome {
+                header.set_recipient_id(context_id);
+            } else {
+                header.set_log_index(context_id);
+            }
             header
         })
 }
@@ -93,7 +97,12 @@ fn prop_frame_header_roundtrip() {
         prop_assert_eq!(decoded.room_id(), header.room_id(), "Room ID mismatch");
         prop_assert_eq!(decoded.sender_id(), header.sender_id(), "Sender ID mismatch");
         prop_assert_eq!(decoded.epoch(), header.epoch(), "Epoch mismatch");
-        prop_assert_eq!(decoded.log_index(), header.log_index(), "Log index mismatch");
+        // Use correct getter based on opcode (context_id has different semantics)
+        if header.opcode_enum() == Some(Opcode::Welcome) {
+            prop_assert_eq!(decoded.recipient_id(), header.recipient_id(), "Recipient ID mismatch");
+        } else {
+            prop_assert_eq!(decoded.log_index(), header.log_index(), "Log index mismatch");
+        }
         prop_assert_eq!(
             decoded.payload_size(),
             header.payload_size(),
