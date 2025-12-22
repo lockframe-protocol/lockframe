@@ -386,7 +386,7 @@ where
             }
 
             // Export the updated MLS state for persistence
-            let state = group.export_group_state();
+            let state = group.export_group_state()?;
             room_actions.push(RoomAction::PersistMlsState { room_id, state, processed_at: now });
         }
 

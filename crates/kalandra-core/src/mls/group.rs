@@ -553,19 +553,25 @@ impl<E: Environment> MlsGroup<E> {
     /// This is used by the RoomManager to persist MLS state after processing
     /// commits. It includes the lightweight validation data (epoch, members,
     /// public keys) plus the serialized OpenMLS state.
-    pub fn export_group_state(&self) -> MlsGroupState {
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - Tree hash has unexpected length (MLS invariant violation)
+    /// - State serialization fails
+    pub fn export_group_state(&self) -> Result<MlsGroupState, MlsError> {
         let mut members = Vec::new();
         let mut member_keys = HashMap::new();
 
-        for m in self.mls_group.members() {
-            let identity = m.credential.serialized_content();
+        for member in self.mls_group.members() {
+            let identity = member.credential.serialized_content();
             if identity.len() >= 8 {
                 if let Ok(id_bytes) = identity[..8].try_into() {
                     let member_id = u64::from_le_bytes(id_bytes);
                     members.push(member_id);
 
-                    if m.signature_key.len() == 32 {
-                        if let Ok(key_bytes) = m.signature_key.as_slice().try_into() {
+                    if member.signature_key.len() == 32 {
+                        if let Ok(key_bytes) = member.signature_key.as_slice().try_into() {
                             member_keys.insert(member_id, key_bytes);
                         }
                     }
@@ -573,12 +579,23 @@ impl<E: Environment> MlsGroup<E> {
             }
         }
 
-        let tree_hash: [u8; 32] =
-            self.mls_group.export_group_context().tree_hash().try_into().unwrap_or([0u8; 32]);
+        let tree_hash: [u8; 32] = self
+            .mls_group
+            .export_group_context()
+            .tree_hash()
+            .try_into()
+            .map_err(|_| MlsError::Crypto("tree hash has unexpected length".to_string()))?;
 
-        let state = self.export_state().unwrap_or_default();
+        let state = self.export_state()?;
 
-        MlsGroupState::with_keys(self.room_id, self.epoch(), tree_hash, members, member_keys, state)
+        Ok(MlsGroupState::with_keys(
+            self.room_id,
+            self.epoch(),
+            tree_hash,
+            members,
+            member_keys,
+            state,
+        ))
     }
 
     /// Generate a KeyPackage for joining groups.

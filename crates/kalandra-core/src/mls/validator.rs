@@ -67,26 +67,36 @@ impl MlsValidator {
 
         debug_assert!(group_state.is_member(sender_id));
 
-        if let Some(verifying_key) = group_state.member_key(sender_id) {
-            let signature_bytes = frame.header.signature();
-
-            let signature: Signature = match signature_bytes.as_slice().try_into() {
-                Ok(sig) => sig,
-                Err(_) => {
-                    return Ok(ValidationResult::Reject {
-                        reason: "invalid signature format".to_string(),
-                    });
-                },
-            };
-
-            let header_bytes = frame.header.to_bytes();
-            let signed_data = &header_bytes[..64];
-
-            if verifying_key.verify(signed_data, &signature).is_err() {
+        let verifying_key = match group_state.member_key(sender_id) {
+            Some(key) => key,
+            None => {
                 return Ok(ValidationResult::Reject {
-                    reason: format!("signature verification failed for sender {}", sender_id),
+                    reason: format!(
+                        "member {} has no signature key (group state inconsistency)",
+                        sender_id
+                    ),
                 });
-            }
+            },
+        };
+
+        let signature_bytes = frame.header.signature();
+
+        let signature: Signature = match signature_bytes.as_slice().try_into() {
+            Ok(sig) => sig,
+            Err(_) => {
+                return Ok(ValidationResult::Reject {
+                    reason: "invalid signature format".to_string(),
+                });
+            },
+        };
+
+        let header_bytes = frame.header.to_bytes();
+        let signed_data = &header_bytes[..64];
+
+        if verifying_key.verify(signed_data, &signature).is_err() {
+            return Ok(ValidationResult::Reject {
+                reason: format!("signature verification failed for sender {}", sender_id),
+            });
         }
 
         Ok(ValidationResult::Accept)
@@ -121,7 +131,10 @@ impl MlsValidator {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
     use bytes::Bytes;
+    use ed25519_dalek::{Signer, SigningKey};
     use kalandra_proto::{FrameHeader, Opcode};
 
     use super::*;
@@ -139,10 +152,42 @@ mod tests {
         MlsGroupState::new(100, epoch, [0u8; 32], members, vec![])
     }
 
+    fn create_signed_frame_and_state(
+        sender_id: u64,
+        epoch: u64,
+        members: Vec<u64>,
+    ) -> (Frame, MlsGroupState) {
+        let mut member_keys = HashMap::new();
+        let mut signing_keys = HashMap::new();
+
+        for &member in &members {
+            let signing_key = SigningKey::generate(&mut rand::thread_rng());
+            let verifying_key = signing_key.verifying_key();
+            member_keys.insert(member, verifying_key.to_bytes());
+            signing_keys.insert(member, signing_key);
+        }
+
+        let mut header = FrameHeader::new(Opcode::AppMessage);
+        header.set_sender_id(sender_id);
+        header.set_epoch(epoch);
+        header.set_room_id(100);
+
+        let header_bytes = header.to_bytes();
+        let signed_data = &header_bytes[..64];
+        let signature =
+            signing_keys.get(&sender_id).expect("sender must be in members").sign(signed_data);
+
+        header.set_signature(signature.to_bytes());
+        let frame = Frame::new(header, Bytes::new());
+
+        let state = MlsGroupState::with_keys(100, epoch, [0u8; 32], members, member_keys, vec![]);
+
+        (frame, state)
+    }
+
     #[test]
     fn test_valid_frame_accepted() {
-        let frame = create_test_frame(100, 5);
-        let state = create_test_state(5, vec![100, 200, 300]);
+        let (frame, state) = create_signed_frame_and_state(100, 5, vec![100, 200, 300]);
 
         let result = MlsValidator::validate_frame(&frame, 5, &state).expect("validation failed");
 
@@ -201,12 +246,39 @@ mod tests {
 
     #[test]
     fn test_all_members_accepted() {
-        let state = create_test_state(5, vec![100, 200, 300]);
+        let members = vec![100, 200, 300];
+        let epoch = 5;
 
-        for sender in [100, 200, 300] {
-            let frame = create_test_frame(sender, 5);
+        // Generate keys for all members
+        let mut member_keys = HashMap::new();
+        let mut signing_keys = HashMap::new();
+
+        for &member in &members {
+            let signing_key = SigningKey::generate(&mut rand::thread_rng());
+            let verifying_key = signing_key.verifying_key();
+            member_keys.insert(member, verifying_key.to_bytes());
+            signing_keys.insert(member, signing_key);
+        }
+
+        let state =
+            MlsGroupState::with_keys(100, epoch, [0u8; 32], members.clone(), member_keys, vec![]);
+
+        for sender in members {
+            // Create and sign a frame for each sender
+            let mut header = FrameHeader::new(Opcode::AppMessage);
+            header.set_sender_id(sender);
+            header.set_epoch(epoch);
+            header.set_room_id(100);
+
+            let header_bytes = header.to_bytes();
+            let signed_data = &header_bytes[..64];
+            let signature = signing_keys.get(&sender).unwrap().sign(signed_data);
+
+            header.set_signature(signature.to_bytes());
+            let frame = Frame::new(header, Bytes::new());
+
             let result =
-                MlsValidator::validate_frame(&frame, 5, &state).expect("validation failed");
+                MlsValidator::validate_frame(&frame, epoch, &state).expect("validation failed");
             assert_eq!(result, ValidationResult::Accept);
         }
     }
@@ -235,10 +307,6 @@ mod tests {
 
     #[test]
     fn test_valid_signature_accepted() {
-        use std::collections::HashMap;
-
-        use ed25519_dalek::{Signer, SigningKey};
-
         // Generate a signing key pair
         let signing_key = SigningKey::generate(&mut rand::thread_rng());
         let verifying_key = signing_key.verifying_key();
@@ -271,10 +339,6 @@ mod tests {
 
     #[test]
     fn test_invalid_signature_rejected() {
-        use std::collections::HashMap;
-
-        use ed25519_dalek::{Signer, SigningKey};
-
         // Generate two different key pairs
         let signing_key = SigningKey::generate(&mut rand::thread_rng());
         let wrong_verifying_key = SigningKey::generate(&mut rand::thread_rng()).verifying_key();
@@ -310,13 +374,21 @@ mod tests {
     }
 
     #[test]
-    fn test_no_key_skips_signature_check() {
-        // Frame without signature verification (no public key stored)
+    fn test_no_key_rejects_frame() {
+        // Member exists but has no signature key stored - should reject
         let frame = create_test_frame(100, 5);
         let state = create_test_state(5, vec![100, 200, 300]);
 
-        // Should still accept (backwards compatibility)
         let result = MlsValidator::validate_frame(&frame, 5, &state).expect("validation failed");
-        assert_eq!(result, ValidationResult::Accept);
+
+        match result {
+            ValidationResult::Reject { reason } => {
+                assert!(reason.contains("no signature key"));
+                assert!(reason.contains("group state inconsistency"));
+            },
+            ValidationResult::Accept => {
+                panic!("Expected rejection when member key is missing")
+            },
+        }
     }
 }
