@@ -335,6 +335,31 @@ impl FrameHeader {
     pub fn set_signature(&mut self, signature: [u8; 64]) {
         self.signature = signature;
     }
+
+    /// Set the request ID for request/response correlation.
+    ///
+    /// The request ID allows clients to match responses to their original
+    /// requests. Set by clients when sending requests.
+    pub fn set_request_id(&mut self, request_id: u32) {
+        self.request_id = request_id.to_be_bytes();
+    }
+
+    /// Set the frame flags.
+    ///
+    /// Flags control frame processing behavior (compression, fragmentation,
+    /// priority, etc.). See [`FrameFlags`] for available flags.
+    pub fn set_flags(&mut self, flags: FrameFlags) {
+        self.flags = flags.to_byte();
+    }
+
+    /// Set the HLC (Hybrid Logical Clock) timestamp.
+    ///
+    /// Used for causality tracking and replay protection. The timestamp
+    /// combines physical time with a logical counter to ensure unique,
+    /// monotonically increasing values even with clock drift.
+    pub fn set_hlc_timestamp(&mut self, timestamp: u64) {
+        self.hlc_timestamp = timestamp.to_be_bytes();
+    }
 }
 
 // Manual Debug implementation (can't derive due to packed repr)
