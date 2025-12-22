@@ -21,7 +21,8 @@
 //! 1. External runtime produces `ServerEvent`s (connection accepted, frame
 //!    received)
 //! 2. ServerDriver processes events and produces `ServerAction`s
-//! 3. ActionExecutor (runtime-specific) executes actions
+//! 3. Runtime-specific code executes actions (production: lib.rs, simulation:
+//!    SimServer)
 
 use std::{collections::HashMap, time::Instant};
 
@@ -90,7 +91,7 @@ pub enum ServerEvent {
 
 /// Actions that the server driver produces.
 ///
-/// These are executed by the ActionExecutor (runtime-specific).
+/// These are executed by runtime-specific code (production or simulation).
 #[derive(Debug, Clone)]
 pub enum ServerAction {
     /// Send a frame to a specific session

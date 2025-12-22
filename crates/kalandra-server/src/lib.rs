@@ -36,7 +36,7 @@ use std::{collections::HashMap, sync::Arc};
 use bytes::BytesMut;
 pub use driver::{LogLevel, ServerAction, ServerConfig as DriverConfig, ServerDriver, ServerEvent};
 pub use error::ServerError;
-pub use executor::{ActionExecutor, BroadcastPolicy};
+pub use executor::BroadcastPolicy;
 use kalandra_proto::{Frame, FrameHeader};
 pub use registry::{ConnectionRegistry, SessionInfo};
 pub use room_manager::{RoomAction, RoomError, RoomManager, RoomMetadata};

@@ -1,20 +1,7 @@
-//! Action executor trait for server I/O.
+//! Broadcast policy configuration for server I/O.
 //!
-//! The executor trait separates action generation (action-based design) from
-//! I/O execution. Different implementations handle I/O differently:
-//! - Simulation: Routes through SimTransport with virtual time
-//! - Production: Uses Quinn/tokio for real network I/O
-//!
-//! # Broadcast Policy
-//!
-//! The executor can be configured with different policies for handling
-//! broadcast failures:
-//! - `BestEffort`: Log and continue (simulation)
-//! - `Retry`: Retry with backoff (production)
-
-use std::future::Future;
-
-use crate::server_error::ExecutorError;
+//! Defines how the server handles broadcast failures when sending frames
+//! to multiple recipients.
 
 /// Policy for handling broadcast send failures.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -32,28 +19,6 @@ pub enum BroadcastPolicy {
         /// Initial backoff duration in milliseconds
         initial_backoff_ms: u64,
     },
-}
-
-/// Trait for executing server actions.
-///
-/// Implementations perform the actual I/O (sending frames, persisting data).
-/// The trait is async to support non-blocking I/O in production.
-pub trait ActionExecutor: Send + Sync {
-    /// Execute a single server action.
-    ///
-    /// # Errors
-    ///
-    /// Returns `ExecutorError` if the action cannot be completed.
-    /// The error type indicates whether retry is appropriate.
-    fn execute(
-        &self,
-        action: super::ServerAction,
-    ) -> impl Future<Output = Result<(), ExecutorError>> + Send;
-
-    /// Get the broadcast policy for this executor.
-    fn broadcast_policy(&self) -> BroadcastPolicy {
-        BroadcastPolicy::BestEffort
-    }
 }
 
 #[cfg(test)]
