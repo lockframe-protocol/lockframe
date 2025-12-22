@@ -4,27 +4,6 @@
 //! It is completely decoupled from I/O, enabling deterministic testing and
 //! formal verification.
 //!
-//! # Architecture: "The Hollow Shell"
-//!
-//! Protocol logic is strictly separated from transport concerns:
-//!
-//! ```text
-//!      ┌────────────────────────────┐
-//!      │ kalandra-core              │
-//!      │ - State machines           │
-//!      │ - Protocol logic           │
-//!      │ - Shared components        │
-//!      └────────────────────────────┘
-//!         ↓                      ↓
-//! ┌──────────────────┐  ┌─────────────────┐
-//! │ kalandra-harness │  │ kalandra-server │
-//! │ (Turmoil)        │  │ (Quinn/Tokio)   │
-//! │ - Virtual time   │  │ - Real network  │
-//! │ - Seeded RNG     │  │ - System clock  │
-//! │ - Fault inject   │  │ - Production    │
-//! └──────────────────┘  └─────────────────┘
-//! ```
-//!
 //! # Key Principles
 //!
 //! - No I/O in Core: Never call `tokio::spawn`, `std::time::Instant::now()`, or

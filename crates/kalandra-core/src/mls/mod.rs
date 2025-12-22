@@ -4,21 +4,21 @@
 //! strong security guarantees including forward secrecy and post-compromise
 //! security.
 //!
-//! # Architecture
+//! # Components
 //!
-//! - **`group`**: Client-side MLS group state machine
-//! - **`state`**: MLS group state for storage and validation
-//! - **`provider`**: OpenMLS provider integration
-//! - **`validator`**: Frame validation for server sequencing
-//! - **`error`**: MLS-specific error types
-//! - **`constants`**: Protocol constants and limits
+//! - [`group`]: Client-side MLS group state machine
+//! - [`state`]: MLS group state for storage and validation
+//! - [`provider`]: OpenMLS provider integration
+//! - [`validator`]: Frame validation for server sequencing
+//! - [`error`]: MLS-specific error types
+//! - [`constants`]: Protocol constants and limits
 //!
-//! # Design Principles
+//! # Design
 //!
-//! 1. **Sans-IO**: All MLS logic returns actions, no direct I/O
-//! 2. **Epoch-based ordering**: Server enforces total order via epochs
-//! 3. **Server authority**: Server can moderate via External Commits
-//! 4. **Action pattern**: Methods return `Result<Vec<MlsAction>, MlsError>`
+//! 1. Sans-IO: All MLS logic returns actions, no direct I/O
+//! 2. Epoch-based ordering: Server enforces total order via epochs
+//! 3. Server authority: Server can moderate via External Commits
+//! 4. Action pattern: Methods return `Result<Vec<MlsAction>, MlsError>`
 
 pub mod constants;
 pub mod error;

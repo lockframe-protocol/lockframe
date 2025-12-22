@@ -1,9 +1,9 @@
 //! Connection state machine for Kalandra protocol.
 //!
-//! This module implements the session layer - managing connection lifecycle,
+//! This module implements the session layer that manages connection lifecycles,
 //! heartbeats, timeouts, and graceful shutdown.
 //!
-//! # Architecture: Action-Based State Machine
+//! # Design
 //!
 //! This state machine follows the action pattern:
 //! - Methods accept time as parameter (no stored Environment)
@@ -18,7 +18,7 @@
 //! # State Machine
 //!
 //! ```text
-//! ┌──────┐  Hello   ┌──────────┐  Authenticated  ┌───────────────┐
+//! ┌──────┐  Hello   ┌──────────┐   HelloReply    ┌───────────────┐
 //! │ Init │─────────>│ Pending  │────────────────>│ Authenticated │
 //! └──────┘          └──────────┘                 └───────────────┘
 //!                        │                               │
@@ -31,16 +31,10 @@
 //!
 //! # Lifecycle
 //!
-//! 1. **Init**: Connection created, no handshake yet
-//! 2. **Pending**: Hello sent, waiting for HelloReply
-//! 3. **Authenticated**: HelloReply received, ready for messages
-//! 4. **Closed**: Connection terminated (graceful or error)
-//!
-//! # Timeouts
-//!
-//! - **Handshake timeout**: 30 seconds to complete Hello/HelloReply
-//! - **Idle timeout**: 60 seconds without any activity
-//! - **Heartbeat interval**: 20 seconds (sends Ping to keep alive)
+//! 1. Init: Connection created, no handshake yet
+//! 2. Pending: Hello sent, waiting for HelloReply
+//! 3. Authenticated: HelloReply received, ready for messages
+//! 4. Closed: Connection terminated (graceful or error)
 
 use std::time::{Duration, Instant};
 
@@ -50,6 +44,15 @@ use kalandra_proto::{
 };
 
 use crate::error::ConnectionError;
+
+/// Time allowed to complete the Hello/HelloReply handshake.
+pub const DEFAULT_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Maximum time allowed without any activity before the connection is closed.
+pub const DEFAULT_IDLE_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// Interval at which the connection sends Ping frames while authenticated.
+pub const DEFAULT_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(20);
 
 /// Actions returned by the connection state machine.
 ///
@@ -95,9 +98,9 @@ pub struct ConnectionConfig {
 impl Default for ConnectionConfig {
     fn default() -> Self {
         Self {
-            handshake_timeout: Duration::from_secs(30),
-            idle_timeout: Duration::from_secs(60),
-            heartbeat_interval: Duration::from_secs(20),
+            handshake_timeout: DEFAULT_HANDSHAKE_TIMEOUT,
+            idle_timeout: DEFAULT_IDLE_TIMEOUT,
+            heartbeat_interval: DEFAULT_HEARTBEAT_INTERVAL,
         }
     }
 }
@@ -144,6 +147,12 @@ impl Connection {
     #[must_use]
     pub fn session_id(&self) -> Option<u64> {
         self.session_id
+    }
+
+    /// Get handshake timeout duration
+    #[must_use]
+    pub fn handshake_timeout(&self) -> Duration {
+        self.config.handshake_timeout
     }
 
     /// Set session ID (server use: before handling Hello)
@@ -206,16 +215,13 @@ impl Connection {
             return Err(ConnectionError::UnsupportedVersion(hello.version));
         }
 
-        // Generate session ID from Environment
         let session_id = env.random_u64();
         debug_assert_ne!(session_id, 0);
 
-        // Update connection state
         self.session_id = Some(session_id);
         self.state = ConnectionState::Authenticated;
         self.last_activity = now;
 
-        // Create HelloReply
         let reply =
             Payload::HelloReply(HelloReply { session_id, capabilities: vec![], challenge: None });
 
@@ -328,7 +334,6 @@ impl Connection {
                             return Err(ConnectionError::UnsupportedVersion(hello.version));
                         }
 
-                        // Server must have session_id set before handling Hello
                         let Some(session_id) = self.session_id else {
                             return Err(ConnectionError::Protocol(
                                 "server must set session_id before handling Hello".to_string(),
@@ -431,7 +436,6 @@ mod tests {
     use super::*;
     use crate::env::Environment;
 
-    // Minimal test environment
     #[derive(Clone)]
     struct TestEnv;
 

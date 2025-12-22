@@ -109,7 +109,7 @@ fn prop_state_never_goes_backward() {
 fn handshake_timeout_no_response() {
     let env = TestEnv;
     let now = env.now();
-    let config = ConnectionConfig::default(); // 30s handshake timeout
+    let config = ConnectionConfig::default();
     let mut client = Connection::new(now, config);
 
     // Client sends Hello
@@ -119,7 +119,7 @@ fn handshake_timeout_no_response() {
     assert!(matches!(actions[0], ConnectionAction::SendFrame(_)));
 
     // Server never responds - time advances past handshake timeout
-    let future = now + Duration::from_secs(31);
+    let future = now + client.handshake_timeout() + Duration::from_secs(1);
     let actions = client.tick(future);
 
     // Client should timeout and close
