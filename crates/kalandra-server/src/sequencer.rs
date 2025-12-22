@@ -6,16 +6,16 @@
 //!
 //! # Architecture
 //!
-//! - **Sans-IO**: Returns actions instead of performing I/O directly
-//! - **Deterministic**: Same input frames → same log_index assignment
-//! - **Stateful**: Maintains next_log_index per room (cached from Storage)
+//! - Sans-IO: Returns actions instead of performing I/O directly
+//! - Deterministic: Same input frames → same log_index assignment
+//! - Stateful: Maintains next_log_index per room (cached from Storage)
 //!
 //! # Flow
 //!
-//! 1. **Load State**: Get latest log_index from storage
-//! 2. **Validate Frame Structure**: Check magic, version, payload size
-//! 3. **Sequence**: Assign next log_index to frame
-//! 4. **Return Actions**: StoreFrame, BroadcastFrame, etc.
+//! 1. Load State: Get latest log_index from storage
+//! 2. Validate Frame Structure: Check magic, version, payload size
+//! 3. Sequence: Assign next log_index to frame
+//! 4. Return Actions: StoreFrame, BroadcastFrame, etc.
 
 use std::collections::HashMap;
 

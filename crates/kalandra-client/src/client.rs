@@ -277,6 +277,11 @@ impl<E: Environment> Client<E> {
             return Err(ClientError::EpochMismatch { expected: room_epoch, actual: frame_epoch });
         }
 
+        let validation_state = room.mls_group.export_validation_state();
+        room.mls_group
+            .validate_frame(&frame, Some(&validation_state))
+            .map_err(|e| ClientError::InvalidFrame { reason: e.to_string() })?;
+
         let proto_encrypted = deserialize_encrypted_message(&frame.payload)
             .map_err(|e| ClientError::InvalidFrame { reason: e })?;
 
@@ -781,6 +786,25 @@ mod tests {
             },
             _ => panic!("Expected Send action"),
         }
+    }
+
+    #[test]
+    fn app_message_with_invalid_signature_is_rejected() {
+        let env = TestEnv;
+        let identity = ClientIdentity::new(42);
+        let mut client = Client::new(env, identity);
+
+        let room_id = 0x1234_u128;
+        client.handle(ClientEvent::CreateRoom { room_id }).unwrap();
+
+        let mut header = FrameHeader::new(Opcode::AppMessage);
+        header.set_room_id(room_id);
+        header.set_sender_id(42);
+        header.set_epoch(0);
+        let frame = Frame::new(header, Vec::<u8>::new());
+
+        let result = client.handle(ClientEvent::FrameReceived(frame));
+        assert!(matches!(result, Err(ClientError::InvalidFrame { .. })));
     }
 
     #[test]
