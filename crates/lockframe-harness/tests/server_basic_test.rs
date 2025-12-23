@@ -318,7 +318,8 @@ fn server_driver_direct_event_processing() {
         let mut server = SimServer::bind("0.0.0.0:443").await?;
 
         // Use driver directly to simulate connection without TCP
-        let _ = server.driver_mut().process_event(ServerEvent::ConnectionAccepted { conn_id: 100 });
+        let _ =
+            server.driver_mut().process_event(ServerEvent::ConnectionAccepted { session_id: 100 });
 
         verify_connection_count(&server, 1, "after direct event");
 
@@ -328,7 +329,7 @@ fn server_driver_direct_event_processing() {
 
         // Close connection via driver
         let _ = server.driver_mut().process_event(ServerEvent::ConnectionClosed {
-            conn_id: 100,
+            session_id: 100,
             reason: "test complete".to_string(),
         });
 

@@ -213,8 +213,6 @@ where
         }
 
         let mut conn = Connection::new(now, self.config.connection.clone());
-
-        let session_id = self.env.random_u64();
         conn.set_session_id(session_id);
 
         self.connections.insert(session_id, conn);

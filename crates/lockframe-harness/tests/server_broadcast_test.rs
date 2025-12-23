@@ -41,9 +41,12 @@ fn broadcast_to_room_members() {
         let mut server = SimServer::bind("0.0.0.0:443").await?;
 
         // Create 3 connections using driver directly (simpler for this test)
-        let _ = server.driver_mut().process_event(ServerEvent::ConnectionAccepted { conn_id: 1 });
-        let _ = server.driver_mut().process_event(ServerEvent::ConnectionAccepted { conn_id: 2 });
-        let _ = server.driver_mut().process_event(ServerEvent::ConnectionAccepted { conn_id: 3 });
+        let _ =
+            server.driver_mut().process_event(ServerEvent::ConnectionAccepted { session_id: 1 });
+        let _ =
+            server.driver_mut().process_event(ServerEvent::ConnectionAccepted { session_id: 2 });
+        let _ =
+            server.driver_mut().process_event(ServerEvent::ConnectionAccepted { session_id: 3 });
 
         // Create room with conn1 as creator
         server.create_room(ROOM_1, 1)?;
@@ -82,8 +85,9 @@ fn rooms_are_isolated() {
 
         // Create 4 connections
         for i in 1..=4 {
-            let _ =
-                server.driver_mut().process_event(ServerEvent::ConnectionAccepted { conn_id: i });
+            let _ = server
+                .driver_mut()
+                .process_event(ServerEvent::ConnectionAccepted { session_id: i });
         }
 
         // Create room 1 with conn1, conn2
@@ -126,8 +130,9 @@ fn member_in_multiple_rooms() {
 
         // Create 3 connections
         for i in 1..=3 {
-            let _ =
-                server.driver_mut().process_event(ServerEvent::ConnectionAccepted { conn_id: i });
+            let _ = server
+                .driver_mut()
+                .process_event(ServerEvent::ConnectionAccepted { session_id: i });
         }
 
         // Conn1 creates room 1
@@ -182,8 +187,9 @@ fn disconnect_removes_from_rooms() {
 
         // Create 3 connections
         for i in 1..=3 {
-            let _ =
-                server.driver_mut().process_event(ServerEvent::ConnectionAccepted { conn_id: i });
+            let _ = server
+                .driver_mut()
+                .process_event(ServerEvent::ConnectionAccepted { session_id: i });
         }
 
         // Create room with all 3 members
@@ -195,7 +201,7 @@ fn disconnect_removes_from_rooms() {
 
         // Disconnect conn2
         let _ = server.driver_mut().process_event(ServerEvent::ConnectionClosed {
-            conn_id: 2,
+            session_id: 2,
             reason: "client disconnect".to_string(),
         });
 
@@ -222,8 +228,9 @@ fn disconnect_from_multiple_rooms() {
 
         // Create 3 connections
         for i in 1..=3 {
-            let _ =
-                server.driver_mut().process_event(ServerEvent::ConnectionAccepted { conn_id: i });
+            let _ = server
+                .driver_mut()
+                .process_event(ServerEvent::ConnectionAccepted { session_id: i });
         }
 
         // Create both rooms
@@ -239,7 +246,7 @@ fn disconnect_from_multiple_rooms() {
 
         // Disconnect conn3 - should be removed from both rooms
         let _ = server.driver_mut().process_event(ServerEvent::ConnectionClosed {
-            conn_id: 3,
+            session_id: 3,
             reason: "client disconnect".to_string(),
         });
 
@@ -268,8 +275,9 @@ fn large_room_membership() {
 
         // Create 100 connections
         for i in 1..=100 {
-            let _ =
-                server.driver_mut().process_event(ServerEvent::ConnectionAccepted { conn_id: i });
+            let _ = server
+                .driver_mut()
+                .process_event(ServerEvent::ConnectionAccepted { session_id: i });
         }
 
         // Create room with all members
@@ -305,8 +313,10 @@ fn empty_room_after_all_disconnect() {
         let mut server = SimServer::bind("0.0.0.0:443").await?;
 
         // Create 2 connections
-        let _ = server.driver_mut().process_event(ServerEvent::ConnectionAccepted { conn_id: 1 });
-        let _ = server.driver_mut().process_event(ServerEvent::ConnectionAccepted { conn_id: 2 });
+        let _ =
+            server.driver_mut().process_event(ServerEvent::ConnectionAccepted { session_id: 1 });
+        let _ =
+            server.driver_mut().process_event(ServerEvent::ConnectionAccepted { session_id: 2 });
 
         // Create room with both members
         server.create_room(ROOM_1, 1)?;
@@ -316,11 +326,11 @@ fn empty_room_after_all_disconnect() {
 
         // Disconnect both
         let _ = server.driver_mut().process_event(ServerEvent::ConnectionClosed {
-            conn_id: 1,
+            session_id: 1,
             reason: "disconnect".to_string(),
         });
         let _ = server.driver_mut().process_event(ServerEvent::ConnectionClosed {
-            conn_id: 2,
+            session_id: 2,
             reason: "disconnect".to_string(),
         });
 
