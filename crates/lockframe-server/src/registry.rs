@@ -1,14 +1,11 @@
 //! Connection registry for session and room subscription tracking.
 //!
-//! The registry maintains bidirectional mappings between sessions and rooms:
-//! - `room → sessions`: Which sessions are subscribed to a room (for broadcast)
-//! - `session → rooms`: Which rooms a session is in (for cleanup on disconnect)
+//! The registry maintains bidirectional mappings: room → sessions (for
+//! broadcast) and session → rooms (for cleanup on disconnect). This enables
+//! O(1) lookups in both directions.
 //!
-//! # Design
-//!
-//! - Bidirectional mapping: Enables O(1) lookups in both directions
-//! - Explicit subscription: No lazy room creation (per CLAUDE.md)
-//! - Cleanup on disconnect: Unregistering a session removes all subscriptions
+//! Sessions must explicitly subscribe to rooms - no lazy room creation. When
+//! you unregister a session, we automatically remove all its subscriptions.
 
 use std::collections::{HashMap, HashSet};
 
@@ -91,12 +88,12 @@ impl ConnectionRegistry {
         Some((info, rooms))
     }
 
-    /// Get session info by ID.
+    /// Session metadata. `None` if session doesn't exist.
     pub fn sessions(&self, session_id: u64) -> Option<&SessionInfo> {
         self.sessions.get(&session_id)
     }
 
-    /// Get mutable session info by ID.
+    /// Mutable session metadata. `None` if session doesn't exist.
     pub fn sessions_mut(&mut self, session_id: u64) -> Option<&mut SessionInfo> {
         self.sessions.get_mut(&session_id)
     }
@@ -141,22 +138,22 @@ impl ConnectionRegistry {
         self.room_subscriptions.get(&room_id).is_some_and(|s| s.contains(&session_id))
     }
 
-    /// Get all sessions subscribed to a room.
+    /// All sessions subscribed to a room.
     pub fn sessions_in_room(&self, room_id: u128) -> impl Iterator<Item = u64> + '_ {
         self.room_subscriptions.get(&room_id).into_iter().flat_map(|s| s.iter().copied())
     }
 
-    /// Get all rooms a session is subscribed to.
+    /// All rooms a session is subscribed to.
     pub fn rooms_for_session(&self, session_id: u64) -> impl Iterator<Item = u128> + '_ {
         self.session_rooms.get(&session_id).into_iter().flat_map(|r| r.iter().copied())
     }
 
-    /// Get total number of registered sessions.
+    /// Total number of registered sessions.
     pub fn session_count(&self) -> usize {
         self.sessions.len()
     }
 
-    /// Get number of sessions in a specific room.
+    /// Number of sessions subscribed to a room.
     pub fn room_session_count(&self, room_id: u128) -> usize {
         self.room_subscriptions.get(&room_id).map_or(0, HashSet::len)
     }

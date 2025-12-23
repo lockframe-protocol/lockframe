@@ -70,11 +70,6 @@ type PendingJoin<E> = PendingJoinState<E>;
 /// Client state machine.
 ///
 /// Manages multiple room memberships and handles message encryption/decryption.
-/// Pure state machine - returns actions, caller handles I/O.
-///
-/// # Type Parameters
-///
-/// - `E`: Environment implementation for time/randomness
 pub struct Client<E: Environment> {
     /// Our persistent identity.
     identity: ClientIdentity,
@@ -96,12 +91,12 @@ impl<E: Environment> Client<E> {
         Self { identity, rooms: HashMap::new(), pending_joins: Vec::new(), env }
     }
 
-    /// Get the client's sender ID.
+    /// Client's stable sender ID used in frame headers.
     pub fn sender_id(&self) -> u64 {
         self.identity.sender_id
     }
 
-    /// Get the number of active rooms.
+    /// Number of active room memberships.
     pub fn room_count(&self) -> usize {
         self.rooms.len()
     }
@@ -111,7 +106,7 @@ impl<E: Environment> Client<E> {
         self.rooms.contains_key(&room_id)
     }
 
-    /// Get the current epoch for a room.
+    /// Current MLS epoch for a room. `None` if not a member.
     pub fn epoch(&self, room_id: RoomId) -> Option<u64> {
         self.rooms.get(&room_id).map(|r| r.mls_group.epoch())
     }
@@ -123,10 +118,6 @@ impl<E: Environment> Client<E> {
     /// state internally and uses it when the Welcome message arrives.
     ///
     /// Returns (serialized KeyPackage bytes, KeyPackage hash ref).
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if KeyPackage generation fails.
     pub fn generate_key_package(&mut self) -> Result<(Vec<u8>, Vec<u8>), ClientError> {
         let (kp_bytes, hash_ref, pending_state) =
             MlsGroup::generate_key_package(self.env.clone(), self.identity.sender_id)
@@ -138,10 +129,6 @@ impl<E: Environment> Client<E> {
     }
 
     /// Process an event and return resulting actions.
-    ///
-    /// # Errors
-    ///
-    /// Returns `ClientError` if the event cannot be processed.
     pub fn handle(&mut self, event: ClientEvent) -> Result<Vec<ClientAction>, ClientError> {
         match event {
             ClientEvent::CreateRoom { room_id } => self.handle_create_room(room_id),
@@ -158,7 +145,6 @@ impl<E: Environment> Client<E> {
         }
     }
 
-    /// Handle room creation.
     fn handle_create_room(&mut self, room_id: RoomId) -> Result<Vec<ClientAction>, ClientError> {
         if self.rooms.contains_key(&room_id) {
             return Err(ClientError::RoomAlreadyExists { room_id });
@@ -206,7 +192,6 @@ impl<E: Environment> Client<E> {
         Ok(SenderKeyStore::initialize_epoch(&epoch_secret, mls_group.epoch(), &member_indices))
     }
 
-    /// Handle sending a message.
     fn handle_send_message(
         &mut self,
         room_id: RoomId,
@@ -235,7 +220,6 @@ impl<E: Environment> Client<E> {
         Ok(vec![ClientAction::Send(frame)])
     }
 
-    /// Handle received frame.
     fn handle_frame(&mut self, frame: Frame) -> Result<Vec<ClientAction>, ClientError> {
         let room_id = frame.header.room_id();
 
@@ -441,14 +425,7 @@ impl<E: Environment> Client<E> {
     ///
     /// Processes frames from the sync response in order to catch up
     /// to the server's epoch. Each frame is decoded and processed
-    /// sequentially.
-    ///
-    /// # Protocol Flow
-    ///
-    /// 1. Decode SyncResponse payload
-    /// 2. For each frame in order: decode and process
-    /// 3. If `has_more` is true, emit another RequestSync action
-    /// 4. After all frames processed, client should be at server_epoch
+    /// sequentially. If `has_more` is true, emits another RequestSync action.
     fn handle_sync_response(
         &mut self,
         room_id: RoomId,
@@ -544,11 +521,8 @@ impl<E: Environment> Client<E> {
         for (&room_id, room) in &mut self.rooms {
             if room.mls_group.is_commit_timeout(now, COMMIT_TIMEOUT) {
                 let current_epoch = room.mls_group.epoch();
-
-                // Clear the pending commit to prevent repeated RequestSync on each tick
                 room.mls_group.clear_pending_commit();
 
-                // Request sync from server to catch up
                 actions.push(ClientAction::RequestSync {
                     room_id,
                     from_epoch: current_epoch,
@@ -565,7 +539,6 @@ impl<E: Environment> Client<E> {
         Ok(actions)
     }
 
-    /// Handle leaving a room.
     fn handle_leave_room(&mut self, room_id: RoomId) -> Result<Vec<ClientAction>, ClientError> {
         if self.rooms.remove(&room_id).is_none() {
             return Err(ClientError::RoomNotFound { room_id });
@@ -606,7 +579,6 @@ impl<E: Environment> Client<E> {
     }
 }
 
-// Convert from crypto EncryptedMessage to proto EncryptedMessage
 fn crypto_to_proto_encrypted(crypto: &CryptoEncryptedMessage) -> EncryptedMessage {
     EncryptedMessage {
         epoch: crypto.epoch,
@@ -618,7 +590,6 @@ fn crypto_to_proto_encrypted(crypto: &CryptoEncryptedMessage) -> EncryptedMessag
     }
 }
 
-// Convert from proto EncryptedMessage to crypto EncryptedMessage
 fn proto_to_crypto_encrypted(proto: &EncryptedMessage) -> CryptoEncryptedMessage {
     CryptoEncryptedMessage {
         epoch: proto.epoch,
@@ -629,7 +600,6 @@ fn proto_to_crypto_encrypted(proto: &EncryptedMessage) -> CryptoEncryptedMessage
     }
 }
 
-// Serialize EncryptedMessage using CBOR
 fn serialize_encrypted_message(encrypted: &EncryptedMessage) -> Vec<u8> {
     let mut data = Vec::new();
     ciborium::ser::into_writer(encrypted, &mut data)
@@ -637,7 +607,6 @@ fn serialize_encrypted_message(encrypted: &EncryptedMessage) -> Vec<u8> {
     data
 }
 
-// Deserialize EncryptedMessage using CBOR
 fn deserialize_encrypted_message(data: &[u8]) -> Result<EncryptedMessage, String> {
     ciborium::de::from_reader(data).map_err(|e| format!("CBOR decode failed: {e}"))
 }
@@ -654,7 +623,6 @@ mod tests {
 
     use super::*;
 
-    /// Immediate future that completes instantly
     struct ImmediateFuture;
 
     impl Future for ImmediateFuture {

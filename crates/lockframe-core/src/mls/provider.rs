@@ -1,7 +1,7 @@
 //! OpenMLS provider integration with Lockframe's Environment abstraction.
 //!
-//! This module bridges OpenMLS's provider pattern with our deterministic
-//! Environment trait, enabling deterministic testing with Turmoil.
+//! Bridges OpenMLS's provider pattern with our deterministic Environment trait,
+//! enabling deterministic testing with Turmoil.
 
 use openmls_memory_storage::MemoryStorage;
 use openmls_rust_crypto::RustCrypto;
@@ -33,7 +33,7 @@ impl<E: Environment> MlsProvider<E> {
         }
     }
 
-    /// Get the current time from the environment.
+    /// Current time from the environment.
     ///
     /// Used for tracking when commits are sent for timeout detection.
     pub fn now(&self) -> std::time::Instant {

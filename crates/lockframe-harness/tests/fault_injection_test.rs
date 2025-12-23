@@ -9,10 +9,10 @@
 //! # Why 2% packet loss?
 //!
 //! Real-world networks:
-//! - **<1% loss**: Normal operation
-//! - **1-2% loss**: Degraded but usable (realistic worst-case for production)
-//! - **5-10% loss**: Severe degradation, users experiencing issues
-//! - **>20% loss**: Network effectively broken, applications fail
+//! - <1% loss: Normal operation
+//! - 1-2% loss: Degraded but usable (realistic worst-case for production)
+//! - 5-10% loss: Severe degradation, users experiencing issues
+//! - >20% loss: Network effectively broken, applications fail
 //!
 //! Testing 2% validates our protocol can survive degraded but realistic
 //! conditions. Higher loss rates cause TCP handshake failures and extreme

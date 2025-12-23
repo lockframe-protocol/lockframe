@@ -1,7 +1,9 @@
 //! Operation codes for Lockframe protocol frames.
 //!
-//! Opcodes identify the type of operation being performed in a frame. They are
-//! organized into ranges by functionality to allow efficient routing decisions.
+//! Opcodes identify the operation type and are organized into ranges by
+//! functionality. This lets routers make efficient decisions by checking just
+//! the high byte - federation frames (0x4xxx) can route to a specialized
+//! handler without fully parsing the opcode.
 //!
 //! # Opcode Ranges
 //!
@@ -11,35 +13,21 @@
 //! - `0x3000-0x3FFF`: Moderation (content/user management)
 //! - `0x4000-0x4FFF`: Federation (inter-server communication)
 //! - `0x5000-0x5FFF`: Storage (content-addressed storage)
-//!
-//! ## Design Rationale
-//!
-//! The range-based organization allows routers to make coarse-grained decisions
-//! by checking only the high byte. For example, federation frames (`0x4xxx`)
-//! can be routed to a specialized handler without fully parsing the opcode.
 
 use serde_repr::{Deserialize_repr, Serialize_repr};
 
 /// Frame operation codes
 ///
-/// Each opcode represents a distinct protocol operation. The opcode determines
-/// how the frame payload should be interpreted and routed.
-///
-/// # Representation
-///
-/// Opcodes are serialized as Big Endian `u16` values in the frame header.
-/// The `#[repr(u16)]` ensures stable numeric values for wire compatibility.
+/// Each opcode represents a distinct protocol operation and determines how the
+/// frame payload should be interpreted and routed. Serialized as Big Endian u16
+/// values in the frame header.
 ///
 /// # Security
 ///
-/// - **Unknown Opcodes**: The `from_u16` method returns `None` for unknown
-///   values rather than panicking. Frames with unknown opcodes should be
-///   rejected with
-///   [`ProtocolError::InvalidOpcode`](crate::ProtocolError::InvalidOpcode).
-///
-/// - **No Implicit Behavior**: Each opcode must be explicitly handled. There is
-///   no "default" behavior for unknown opcodes, preventing accidental
-///   mishandling of malicious or corrupted frames.
+/// Unknown opcodes return None rather than panicking - frames with unknown
+/// opcodes should be rejected. Each opcode must be explicitly handled with no
+/// "default" behavior, preventing accidental mishandling of malicious or
+/// corrupted frames.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize_repr, Deserialize_repr)]
 #[repr(u16)]
 pub enum Opcode {
@@ -147,8 +135,8 @@ impl Opcode {
     ///
     /// # Security
     ///
-    /// This function is **total** (defined for all u16 values) and
-    /// **infallible**. It returns `Option<Self>` to distinguish between
+    /// This function is total (defined for all u16 values) and
+    /// infallible. It returns `Option<Self>` to distinguish between
     /// known and unknown opcodes, allowing callers to reject frames with
     /// invalid opcodes explicitly.
     ///

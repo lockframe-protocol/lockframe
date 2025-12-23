@@ -9,41 +9,24 @@ use turmoil::net::{TcpListener, TcpStream};
 
 /// Simulation transport using Turmoil's deterministic TCP streams.
 ///
-/// This transport provides:
+/// Provides deterministic delivery (Turmoil controls packet ordering and
+/// timing), fault injection (packet loss, delays, partitions), and reliable
+/// ordered byte delivery like QUIC streams.
 ///
-/// - **Deterministic delivery**: Turmoil controls packet ordering and timing
-/// - **Fault injection**: Can simulate packet loss, delays, and partitions
-/// - **Stream semantics**: Reliable, ordered byte delivery (like QUIC streams)
-///
-/// # Why TCP Instead of QUIC?
-///
-/// We don't simulate QUIC directly because:
-///
-/// 1. Quinn doesn't support pluggable time/RNG (would require forking)
-/// 2. Lockframe's protocol logic lives *inside* QUIC streams
-/// 3. TCP provides identical stream guarantees for testing protocol correctness
-///
-/// # Architecture
-///
-/// Like Quinn's Endpoint, SimTransport can both accept and initiate
-/// connections:
-/// - Server: `SimTransport::bind("0.0.0.0:443")` creates listener
-/// - Client: `SimTransport::client()` creates unbound endpoint that can connect
+/// We use TCP instead of QUIC because Quinn doesn't support pluggable time/RNG,
+/// and Lockframe's protocol logic lives inside QUIC streams anyway - TCP
+/// provides identical stream guarantees for testing protocol correctness. Like
+/// Quinn's Endpoint, can both accept and initiate connections.
 pub struct SimTransport {
     listener: Option<TcpListener>,
 }
 
-/// A simulated connection over TCP.
+/// Simulated connection over TCP.
 ///
-/// This wraps a `TcpStream` and provides QUIC-like semantics for testing.
-///
-/// # Stream Multiplexing Limitation
-///
-/// Unlike QUIC which supports multiple concurrent streams per connection,
-/// TCP provides only one bidirectional byte stream. For testing purposes,
-/// this is sufficient since we test protocol logic, not QUIC multiplexing.
-///
-/// Use `into_split()` to get the underlying stream halves for testing.
+/// Wraps a TcpStream and provides QUIC-like semantics for testing. Unlike
+/// QUIC's multiple concurrent streams, TCP provides only one bidirectional byte
+/// stream - sufficient for testing protocol logic without QUIC multiplexing
+/// complexity.
 pub struct SimConnection {
     stream: TcpStream,
 }
@@ -67,12 +50,6 @@ impl SimTransport {
     /// Creates a server endpoint bound to the specified address.
     ///
     /// This endpoint can accept incoming connections via the Transport trait.
-    ///
-    /// # Errors
-    ///
-    /// Returns error if:
-    /// - The address is already in use
-    /// - The address format is invalid
     pub async fn bind(address: &str) -> io::Result<Self> {
         let listener = TcpListener::bind(address).await?;
         Ok(Self { listener: Some(listener) })
@@ -94,13 +71,6 @@ impl SimTransport {
     /// This is a convenience wrapper that accepts hostnames like "server:443"
     /// and resolves them using Turmoil's internal DNS before calling the
     /// Transport trait's `connect()` method.
-    ///
-    /// # Errors
-    ///
-    /// Returns error if:
-    /// - Hostname resolution fails
-    /// - Connection is refused
-    /// - The remote host is unreachable
     pub async fn connect_to_host(&self, address: &str) -> io::Result<SimConnection> {
         // Turmoil's TcpStream::connect accepts hostname strings directly
         let stream = TcpStream::connect(address).await?;

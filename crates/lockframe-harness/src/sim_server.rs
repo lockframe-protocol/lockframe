@@ -1,16 +1,8 @@
 //! Simulation server wrapper for testing with turmoil.
 //!
-//! This module provides `SimServer`, a wrapper around `ServerDriver` that
-//! integrates with turmoil's deterministic simulation for testing.
-//!
-//! ## Architecture
-//!
-//! ```text
-//! SimServer
-//!   ├─ ServerDriver<SimEnv, MemoryStorage>  (action-based core)
-//!   ├─ TcpListener                          (turmoil TCP)
-//!   └─ connections: HashMap<u64, connection state>
-//! ```
+//! SimServer wraps ServerDriver for integration with turmoil's deterministic
+//! simulation. It uses SimEnv with MemoryStorage for the action-based core,
+//! turmoil TCP for networking, and tracks connection state in a HashMap.
 
 use std::{
     collections::HashMap,
@@ -48,61 +40,49 @@ pub struct SimServer {
     driver: ServerDriver<SimEnv, MemoryStorage>,
     /// TCP listener for accepting connections
     listener: TcpListener,
-    /// Connection state (conn_id → state)
+    /// Connection state (session_id → state)
     connections: HashMap<u64, SimConnectionState>,
     /// Next connection ID
-    next_conn_id: u64,
+    next_session_id: u64,
 }
 
 impl SimServer {
     /// Create and bind a new simulation server.
-    ///
-    /// # Errors
-    ///
-    /// Returns error if binding fails (address in use, etc.)
     pub async fn bind(address: &str) -> io::Result<Self> {
         Self::bind_with_config(address, DriverConfig::default()).await
     }
 
     /// Create and bind a new simulation server with custom config.
-    ///
-    /// # Errors
-    ///
-    /// Returns error if binding fails.
     pub async fn bind_with_config(address: &str, config: DriverConfig) -> io::Result<Self> {
         let listener = TcpListener::bind(address).await?;
         let env = SimEnv::new();
         let storage = MemoryStorage::new();
         let driver = ServerDriver::new(env, storage, config);
 
-        Ok(Self { driver, listener, connections: HashMap::new(), next_conn_id: 1 })
+        Ok(Self { driver, listener, connections: HashMap::new(), next_session_id: 1 })
     }
 
     /// Accept a new connection and return its ID.
     ///
     /// This method blocks until a connection is available.
-    ///
-    /// # Errors
-    ///
-    /// Returns error if accepting fails.
     pub async fn accept_connection(&mut self) -> io::Result<u64> {
         let (stream, _addr) = self.listener.accept().await?;
 
-        let conn_id = self.next_conn_id;
-        self.next_conn_id += 1;
+        let session_id = self.next_session_id;
+        self.next_session_id += 1;
 
         let actions = self
             .driver
-            .process_event(ServerEvent::ConnectionAccepted { conn_id })
+            .process_event(ServerEvent::ConnectionAccepted { session_id })
             .map_err(|e| io::Error::new(ErrorKind::Other, e.to_string()))?;
 
         let (_reader, writer) = tokio::io::split(stream);
-        self.connections.insert(conn_id, SimConnectionState { writer });
+        self.connections.insert(session_id, SimConnectionState { writer });
 
         // Execute actions
         self.execute_actions(actions).await?;
 
-        Ok(conn_id)
+        Ok(session_id)
     }
 
     /// Process a tick event for timeout handling.
@@ -174,7 +154,7 @@ impl SimServer {
         self.connections.remove(&session_id);
 
         let _ = self.driver.process_event(ServerEvent::ConnectionClosed {
-            conn_id: session_id,
+            session_id,
             reason: reason.to_string(),
         });
     }
@@ -192,10 +172,10 @@ impl SimServer {
     /// Process a received frame from a connection.
     ///
     /// Call this when a frame is read from the connection.
-    pub async fn process_frame(&mut self, conn_id: u64, frame: Frame) -> io::Result<()> {
+    pub async fn process_frame(&mut self, session_id: u64, frame: Frame) -> io::Result<()> {
         let actions = self
             .driver
-            .process_event(ServerEvent::FrameReceived { conn_id, frame })
+            .process_event(ServerEvent::FrameReceived { session_id, frame })
             .map_err(|e| io::Error::new(ErrorKind::Other, e.to_string()))?;
 
         self.execute_actions(actions).await
@@ -204,10 +184,10 @@ impl SimServer {
     /// Create a room (for testing convenience).
     ///
     /// The creator connection must already exist.
-    pub fn create_room(&mut self, room_id: u128, creator_conn_id: u64) -> io::Result<()> {
+    pub fn create_room(&mut self, room_id: u128, creator_session_id: u64) -> io::Result<()> {
         let actions = self
             .driver
-            .create_room(room_id, creator_conn_id)
+            .create_room(room_id, creator_session_id)
             .map_err(|e| io::Error::new(ErrorKind::Other, e.to_string()))?;
 
         for action in actions {
@@ -224,7 +204,7 @@ impl SimServer {
         self.driver.has_room(room_id)
     }
 
-    /// Get the number of active connections.
+    /// Number of active connections.
     pub fn connection_count(&self) -> usize {
         self.driver.connection_count()
     }
@@ -234,17 +214,17 @@ impl SimServer {
         self.driver.subscribe_to_room(session_id, room_id)
     }
 
-    /// Get room epoch.
+    /// Current MLS epoch for a room. `None` if room doesn't exist.
     pub fn room_epoch(&self, room_id: u128) -> Option<u64> {
         self.driver.room_epoch(room_id)
     }
 
-    /// Get a reference to the underlying driver (for testing).
+    /// Underlying driver for test assertions.
     pub fn driver(&self) -> &ServerDriver<SimEnv, MemoryStorage> {
         &self.driver
     }
 
-    /// Get a mutable reference to the underlying driver (for testing).
+    /// Mutable underlying driver for test manipulation.
     pub fn driver_mut(&mut self) -> &mut ServerDriver<SimEnv, MemoryStorage> {
         &mut self.driver
     }
@@ -252,7 +232,7 @@ impl SimServer {
 
 /// A simplified server handle for tests that don't need full async operation.
 ///
-/// This wraps SimServer in an Arc<Mutex<>> for shared access in tests.
+/// Wraps SimServer in an Arc<Mutex<>> for shared access in tests.
 pub type SharedSimServer = Arc<Mutex<SimServer>>;
 
 /// Create a shared server for testing.
@@ -287,7 +267,7 @@ mod tests {
             let room_id = 0x1234_5678_90ab_cdef_1234_5678_90ab_cdef;
 
             // Need a connection first - use driver directly
-            let _ = server.driver.process_event(ServerEvent::ConnectionAccepted { conn_id: 1 });
+            let _ = server.driver.process_event(ServerEvent::ConnectionAccepted { session_id: 1 });
 
             server.create_room(room_id, 1)?;
             assert!(server.has_room(room_id));

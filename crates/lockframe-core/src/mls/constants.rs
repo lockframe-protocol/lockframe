@@ -1,6 +1,6 @@
 //! MLS protocol constants
 //!
-//! This module defines constants used for MLS validation and protocol limits.
+//! Constants used for MLS validation and protocol limits.
 
 /// Maximum epoch number (sanity limit to prevent overflow)
 ///

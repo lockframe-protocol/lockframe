@@ -40,19 +40,18 @@ bitflags! {
 impl FrameFlags {
     /// Create flags from raw byte value
     ///
-    /// This function is **infallible** because `bitflags` represents flags as a
+    /// This function is infallible because `bitflags` represents flags as a
     /// simple `u8` wrapper. All 256 possible byte values are valid -
     /// unknown bits are preserved but ignored during flag checks.
     ///
     /// # Security
     ///
-    /// - **No Validation Required**: Unlike enums, flag parsing cannot fail. An
+    /// - No Validation Required: Unlike enums, flag parsing cannot fail. An
     ///   attacker can set reserved bits, but this has no effect on behavior
     ///   since reserved bits are never checked.
     ///
-    /// - **Forward Compatibility**: Future protocol versions can define new
-    ///   flags in currently-reserved bits. Old clients will preserve but ignore
-    ///   them.
+    /// - Forward Compatibility: Future protocol versions can define new flags
+    ///   in currently-reserved bits. Old clients will preserve but ignore them.
     #[must_use]
     pub const fn from_byte(byte: u8) -> Self {
         Self::from_bits_retain(byte)

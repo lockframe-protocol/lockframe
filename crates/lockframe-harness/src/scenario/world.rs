@@ -63,28 +63,28 @@ impl World {
         self.server = Some(connection);
     }
 
-    /// Get the client connection.
+    /// Client connection state (for oracle/assertions).
     ///
     /// Panics if no client has been set.
     pub fn client(&self) -> &Connection {
         self.client.as_ref().expect("no client in world")
     }
 
-    /// Get the server connection.
+    /// Server connection state (for oracle/assertions).
     ///
     /// Panics if no server has been set.
     pub fn server(&self) -> &Connection {
         self.server.as_ref().expect("no server in world")
     }
 
-    /// Get mutable client connection.
+    /// Mutable client connection state.
     ///
     /// Panics if no client has been set.
     pub(crate) fn client_mut(&mut self) -> &mut Connection {
         self.client.as_mut().expect("no client in world")
     }
 
-    /// Get mutable server connection.
+    /// Mutable server connection state.
     ///
     /// Panics if no server has been set.
     pub(crate) fn server_mut(&mut self) -> &mut Connection {
@@ -116,27 +116,27 @@ impl World {
         self.network_events.push(event);
     }
 
-    /// Get number of frames sent by the client.
+    /// Number of frames sent by the client.
     pub fn client_frames_sent(&self) -> usize {
         self.client_frames_sent
     }
 
-    /// Get number of frames received by the client.
+    /// Number of frames received by the client.
     pub fn client_frames_received(&self) -> usize {
         self.client_frames_received
     }
 
-    /// Get number of frames sent by the server.
+    /// Number of frames sent by the server.
     pub fn server_frames_sent(&self) -> usize {
         self.server_frames_sent
     }
 
-    /// Get number of frames received by the server.
+    /// Number of frames received by the server.
     pub fn server_frames_received(&self) -> usize {
         self.server_frames_received
     }
 
-    /// Get all network events that occurred.
+    /// All network events that occurred during scenario execution.
     pub fn network_events(&self) -> &[NetworkEvent] {
         &self.network_events
     }

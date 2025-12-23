@@ -12,19 +12,36 @@ use crate::{room_manager::RoomError, storage::StorageError};
 /// Errors that can occur during server operations.
 #[derive(Debug)]
 pub enum ServerError {
-    /// Session not found in registry
+    /// Session not found in registry.
+    ///
+    /// Occurs when trying to send to or query a session that doesn't exist.
+    /// May be transient if session was just disconnected - client should
+    /// reconnect.
     SessionNotFound(u64),
 
-    /// Session already registered
+    /// Session already registered.
+    ///
+    /// Attempting to register a session ID that already exists. This is a
+    /// logic bug - session IDs should be unique. Fatal - report as issue.
     SessionAlreadyExists(u64),
 
-    /// Room operation failed
+    /// Room operation failed.
+    ///
+    /// Wraps errors from RoomManager (MLS validation, sequencing, etc.).
+    /// See RoomError for details on cause and retryability.
     Room(RoomError),
 
-    /// Storage operation failed
+    /// Storage operation failed.
+    ///
+    /// Wraps errors from storage backend (frame persistence, state loading).
+    /// See StorageError for details. May be transient (I/O errors) or fatal
+    /// (serialization errors).
     Storage(StorageError),
 
-    /// Connection error during send
+    /// Connection error during send.
+    ///
+    /// Failed to send frame to client. Connection may be closed or broken.
+    /// Transient - client can reconnect and retry.
     ConnectionFailed {
         /// Session that failed
         session_id: u64,
@@ -32,7 +49,10 @@ pub enum ServerError {
         reason: String,
     },
 
-    /// Frame encoding/decoding error
+    /// Frame encoding/decoding error.
+    ///
+    /// Invalid frame format received from client or failed to encode response.
+    /// Fatal for that frame/connection - indicates protocol violation or bug.
     Protocol(String),
 }
 
@@ -82,7 +102,10 @@ impl From<lockframe_proto::ProtocolError> for ServerError {
 /// Errors from action execution.
 #[derive(Debug)]
 pub enum ExecutorError {
-    /// Send to session failed
+    /// Send to session failed.
+    ///
+    /// Failed to send frame to client session. Connection may be closed,
+    /// broken, or rate-limited. Transient - client can reconnect.
     SendFailed {
         /// Session that failed
         session_id: u64,
@@ -90,10 +113,16 @@ pub enum ExecutorError {
         reason: String,
     },
 
-    /// Storage write failed
+    /// Storage write failed.
+    ///
+    /// Failed to persist frame or state to storage backend. May be transient
+    /// (disk full, I/O error) or permanent (corruption). Check error message.
     StorageFailed(String),
 
-    /// Transport error
+    /// Transport error.
+    ///
+    /// Low-level network/QUIC error. May be transient (network issues) or
+    /// fatal (connection closed). Check error message for details.
     Transport(String),
 }
 

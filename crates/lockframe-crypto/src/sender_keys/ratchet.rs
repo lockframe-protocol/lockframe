@@ -36,12 +36,12 @@ pub struct MessageKey {
 }
 
 impl MessageKey {
-    /// Get the raw key bytes
+    /// 32-byte symmetric key for XChaCha20-Poly1305 AEAD.
     pub fn key(&self) -> &[u8; 32] {
         &self.key
     }
 
-    /// Get the generation number
+    /// Ratchet generation this key was derived from.
     pub fn generation(&self) -> u32 {
         self.generation
     }
@@ -83,7 +83,7 @@ impl SymmetricRatchet {
         Self { chain_key: *seed, generation: 0 }
     }
 
-    /// Get the current generation number.
+    /// Current generation number.
     ///
     /// This is the number of times `advance()` has been called.
     pub fn generation(&self) -> u32 {
@@ -99,10 +99,6 @@ impl SymmetricRatchet {
     /// 2. Derives the next chain key
     /// 3. Overwrites the old chain key
     /// 4. Increments the generation counter
-    ///
-    /// # Errors
-    ///
-    /// Returns `GenerationOverflow` if generation would exceed `u32::MAX`.
     pub fn advance(&mut self) -> Result<MessageKey, SenderKeyError> {
         if self.generation == u32::MAX {
             return Err(SenderKeyError::GenerationOverflow { current: self.generation });
@@ -125,13 +121,6 @@ impl SymmetricRatchet {
     ///
     /// Used for decrypting out-of-order messages. If the target generation
     /// is ahead of our current position, we skip forward.
-    ///
-    /// # Errors
-    ///
-    /// - `RatchetTooFarBehind` if target is more than `MAX_SKIP` generations
-    ///   ahead
-    /// - `RatchetTooFarBehind` if target is behind current generation (can't go
-    ///   back)
     pub fn advance_to(&mut self, target: u32) -> Result<MessageKey, SenderKeyError> {
         if target < self.generation {
             return Err(SenderKeyError::RatchetTooFarBehind {

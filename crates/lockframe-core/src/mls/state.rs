@@ -7,20 +7,12 @@ use serde::{Deserialize, Serialize};
 
 /// Minimal MLS group state for validation and persistence
 ///
-/// This struct separates lightweight validation state from the heavy OpenMLS
-/// group object. The sequencer and validator only need epoch/members/tree_hash,
-/// not the full MLS group with all its cryptographic state.
-///
-/// # Storage Strategy
-///
-/// - Lightweight fields (epoch, tree_hash, members) are directly accessible
-/// - Full OpenMLS group state is stored as an opaque serialized blob
-/// - This allows fast validation without deserializing the entire group
-///
-/// # Serialization
-///
-/// This type derives Serialize/Deserialize for storage persistence.
-/// The format is CBOR (via ciborium) for compatibility with the wire protocol.
+/// Separates lightweight validation state from the heavy OpenMLS group object.
+/// The sequencer and validator only need epoch/members/tree_hash, not the full
+/// MLS group with all its cryptographic state. Lightweight fields are directly
+/// accessible while the full OpenMLS group state is stored as an opaque
+/// serialized blob, allowing fast validation without deserializing the entire
+/// group. Serialized to CBOR for compatibility with the wire protocol.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct MlsGroupState {
     /// Room ID this group belongs to
@@ -87,14 +79,13 @@ impl MlsGroupState {
         self.members.contains(&member_id)
     }
 
-    /// Get the number of members in the group
+    /// Number of members in the group.
     pub fn member_count(&self) -> usize {
         self.members.len()
     }
 
-    /// Get a member's public key for signature verification
-    ///
-    /// Returns `None` if the member doesn't exist or has no stored key.
+    /// Member's Ed25519 public key for signature verification. `None` if member
+    /// not found or no key stored.
     pub fn member_key(&self, member_id: u64) -> Option<VerifyingKey> {
         self.member_keys.get(&member_id).and_then(|bytes| VerifyingKey::from_bytes(bytes).ok())
     }
@@ -143,11 +134,9 @@ mod tests {
             vec![1, 2, 3, 4, 5, 6, 7, 8],
         );
 
-        // Serialize to CBOR
         let mut encoded = Vec::new();
         ciborium::ser::into_writer(&original, &mut encoded).expect("serialization failed");
 
-        // Deserialize back
         let decoded: MlsGroupState =
             ciborium::de::from_reader(&encoded[..]).expect("deserialization failed");
 

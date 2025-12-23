@@ -1,19 +1,9 @@
-//! Connection state machine for Lockframe protocol.
+//! Session layer state machine.
 //!
-//! This module implements the session layer that manages connection lifecycles,
-//! heartbeats, timeouts, and graceful shutdown.
-//!
-//! # Design
-//!
-//! This state machine follows the action pattern:
-//! - Methods accept time as parameter (no stored Environment)
-//! - Methods return `Result<Vec<ConnectionAction>, ConnectionError>`
-//! - Driver code executes actions (send frames, close connection, etc.)
-//!
-//! This enables:
-//! - Pure state machine logic (no I/O)
-//! - Easy testing (no mocking time/RNG)
-//! - Composability (multiple connections can share one Environment)
+//! Manages connection lifecycle, heartbeats, timeouts, and graceful shutdown.
+//! Uses the action pattern: methods take time as input and return actions for
+//! the driver to execute. This keeps the state machine pure (no I/O) and makes
+//! testing straightforward.
 //!
 //! # State Machine
 //!
@@ -28,13 +18,6 @@
 //!                   │ Closed │<─────────────────────│ Closed │
 //!                   └────────┘                      └────────┘
 //! ```
-//!
-//! # Lifecycle
-//!
-//! 1. Init: Connection created, no handshake yet
-//! 2. Pending: Hello sent, waiting for HelloReply
-//! 3. Authenticated: HelloReply received, ready for messages
-//! 4. Closed: Connection terminated (graceful or error)
 
 use std::time::{Duration, Instant};
 
@@ -137,25 +120,25 @@ impl Connection {
         }
     }
 
-    /// Get current state
+    /// Current connection state
     #[must_use]
     pub fn state(&self) -> ConnectionState {
         self.state
     }
 
-    /// Get session ID (if authenticated)
+    /// Session ID assigned by server. `None` if not authenticated.
     #[must_use]
     pub fn session_id(&self) -> Option<u64> {
         self.session_id
     }
 
-    /// Get handshake timeout duration
+    /// Maximum time allowed for handshake completion.
     #[must_use]
     pub fn handshake_timeout(&self) -> Duration {
         self.config.handshake_timeout
     }
 
-    /// Set session ID (server use: before handling Hello)
+    /// Assign session ID (server use only, before handling Hello).
     ///
     /// The server should generate a random session ID and set it before
     /// handling an incoming Hello frame. The state machine will use this
@@ -164,13 +147,13 @@ impl Connection {
         self.session_id = Some(session_id);
     }
 
-    /// Client: initiate handshake
+    /// Initiate handshake (client use).
     ///
     /// Transitions to Pending state and returns SendFrame(Hello) action.
     ///
     /// # Errors
     ///
-    /// Returns `InvalidState` if not in Init state
+    /// - `ConnectionError::InvalidState` if not in Init state
     pub fn send_hello(&mut self, now: Instant) -> Result<Vec<ConnectionAction>, ConnectionError> {
         if self.state != ConnectionState::Init {
             return Err(ConnectionError::InvalidState {
@@ -188,16 +171,14 @@ impl Connection {
         Ok(vec![ConnectionAction::SendFrame(frame)])
     }
 
-    /// Server: handle incoming Hello message
+    /// Process incoming Hello and generate session ID (server use).
     ///
-    /// Generates a session ID using the Environment's RNG and returns a
-    /// HelloReply.
+    /// Transitions to Authenticated and returns SendFrame(HelloReply).
     ///
     /// # Errors
     ///
-    /// Returns error if:
-    /// - Not in Init state
-    /// - Version is unsupported
+    /// - `ConnectionError::InvalidState` if not in Init state
+    /// - `ConnectionError::UnsupportedVersion` if version ≠ 1
     pub fn handle_hello<E: crate::env::Environment>(
         &mut self,
         hello: &Hello,
@@ -230,21 +211,17 @@ impl Connection {
         Ok(vec![ConnectionAction::SendFrame(frame)])
     }
 
-    /// Transition to Closed state
+    /// Mark connection as closed.
     pub fn close(&mut self) {
         self.state = ConnectionState::Closed;
     }
 
-    /// Update last activity timestamp
-    ///
-    /// Call this when receiving any frame from peer.
+    /// Mark connection as active (call when receiving frames).
     pub fn update_activity(&mut self, now: Instant) {
         self.last_activity = now;
     }
 
-    /// Check if connection has timed out
-    ///
-    /// Returns `Some(elapsed)` if timed out, `None` otherwise
+    /// Elapsed time since last activity, if timeout exceeded. `None` otherwise.
     #[must_use]
     pub fn check_timeout(&self, now: Instant) -> Option<Duration> {
         let elapsed = now - self.last_activity;
@@ -258,13 +235,10 @@ impl Connection {
         if elapsed > timeout { Some(elapsed) } else { None }
     }
 
-    /// Tick the state machine - check for timeouts and heartbeats
+    /// Process periodic maintenance (timeouts and heartbeats).
     ///
-    /// Call this periodically to handle:
-    /// - Timeout detection
-    /// - Heartbeat sending
-    ///
-    /// Returns actions to execute
+    /// Call this periodically to trigger timeout detection and heartbeat
+    /// sending.
     pub fn tick(&mut self, now: Instant) -> Vec<ConnectionAction> {
         let mut actions = Vec::new();
 
@@ -281,7 +255,6 @@ impl Connection {
             return actions;
         }
 
-        // Check if we should send heartbeat
         if self.state == ConnectionState::Authenticated {
             let should_send = match self.last_heartbeat {
                 None => true, // Never sent heartbeat
@@ -304,11 +277,14 @@ impl Connection {
         actions
     }
 
-    /// Process a frame received from the peer and return actions.
+    /// Process incoming frame and update state.
     ///
     /// # Errors
     ///
-    /// Returns error if frame is unexpected for current state or malformed
+    /// - `ConnectionError::UnexpectedFrame` if opcode invalid for current state
+    /// - `ConnectionError::InvalidPayload` if CBOR deserialization fails
+    /// - `ConnectionError::UnsupportedVersion` if Hello version ≠ 1
+    /// - `ConnectionError::Protocol` if server session_id not set
     pub fn handle_frame(
         &mut self,
         frame: &Frame,

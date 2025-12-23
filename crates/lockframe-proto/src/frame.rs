@@ -19,28 +19,24 @@ use crate::{
 /// Layout on the wire:
 /// `[FrameHeader: 128 bytes, raw binary] + [payload: variable bytes]`
 ///
-/// This type holds raw bytes, NOT the `Payload` enum. This allows the
-/// server to route frames without deserializing the payload.
+/// Holds raw bytes, NOT the Payload enum. The server can route frames without
+/// deserializing the payload.
 ///
 /// # Invariants
 ///
-/// - **Size Consistency**: `payload.len()` MUST match `header.payload_size()`.
-///   This invariant is enforced by [`Frame::new`] and verified by
-///   [`Frame::decode`].
+/// - Size Consistency: `payload.len()` MUST match `header.payload_size()`. This
+///   invariant is enforced by [`Frame::new`] and verified by [`Frame::decode`].
 ///
-/// - **Size Limit**: `payload.len()` MUST NOT exceed
+/// - Size Limit: `payload.len()` MUST NOT exceed
 ///   [`FrameHeader::MAX_PAYLOAD_SIZE`] (16 MB). Violations are rejected during
 ///   construction and encoding.
 ///
 /// # Security
 ///
-/// This struct provides **structural validity** only. It guarantees:
-/// - Valid header format (magic number, version, size limits)
-/// - Payload size matches header claim
-///
-/// It does **NOT** guarantee:
-/// - Authentication (signature verification must be done separately)
-/// - Decryption (payload may be ciphertext)
+/// Provides structural validity only. Guarantees valid header format (magic
+/// number, version, size limits) and that payload size matches header claim.
+/// Does NOT guarantee authentication (signature verification must be done
+/// separately) or decryption (payload may be ciphertext).
 /// - CBOR validity (payload deserialization happens later)
 ///
 /// For authenticated content, the signature in `header.signature()` must be
@@ -68,14 +64,14 @@ impl Frame {
     ///
     /// # Security
     ///
-    /// - **Size Enforcement**: The payload size is set automatically, making it
+    /// - Size Enforcement: The payload size is set automatically, making it
     ///   impossible to create a Frame with mismatched header and payload sizes.
     ///   This prevents desynchronization attacks where the header claims a
     ///   different size than the payload.
     ///
-    /// - **No Validation**: This constructor does NOT validate that payload
-    ///   size is under [`FrameHeader::MAX_PAYLOAD_SIZE`]. Oversized frames will
-    ///   be rejected later during [`Frame::encode`]. This design allows
+    /// - No Validation: This constructor does NOT validate that payload size is
+    ///   under [`FrameHeader::MAX_PAYLOAD_SIZE`]. Oversized frames will be
+    ///   rejected later during [`Frame::encode`]. This design allows
     ///   constructing frames for testing without artificial size restrictions.
     #[must_use]
     pub fn new(mut header: FrameHeader, payload: impl Into<Bytes>) -> Self {
@@ -93,18 +89,18 @@ impl Frame {
     ///
     /// # Errors
     ///
-    /// Returns [`ProtocolError::PayloadTooLarge`] if payload exceeds
-    /// [`FrameHeader::MAX_PAYLOAD_SIZE`] (16 MB).
+    /// - `ProtocolError::PayloadTooLarge` if payload exceeds MAX_PAYLOAD_SIZE
+    ///   (16 MB)
     ///
     /// # Security
     ///
-    /// - **Size Limit Enforcement**: This is the enforcement point for the 16
-    ///   MB payload limit. Frames exceeding this size are rejected to prevent
+    /// - Size Limit Enforcement: This is the enforcement point for the 16 MB
+    ///   payload limit. Frames exceeding this size are rejected to prevent
     ///   memory exhaustion DoS attacks.
     ///
-    /// - **No Serialization**: This function performs simple memory copies with
-    ///   no parsing or transformation. There are no opportunities for injection
-    ///   or corruption.
+    /// - No Serialization: This function performs simple memory copies with no
+    ///   parsing or transformation. There are no opportunities for injection or
+    ///   corruption.
     pub fn encode(&self, dst: &mut impl BufMut) -> Result<()> {
         debug_assert_eq!(self.payload.len(), self.header.payload_size() as usize);
 
@@ -128,19 +124,20 @@ impl Frame {
     ///
     /// # Errors
     ///
-    /// Returns error if:
-    /// - Header parsing fails (invalid magic, version, or size limits)
-    /// - Payload is truncated (fewer bytes than header claims)
+    /// - `ProtocolError` if header parsing fails (invalid magic, version, or
+    ///   size limits)
+    /// - `ProtocolError::FrameTooShort` if payload is truncated (fewer bytes
+    ///   than header claims)
     ///
     /// # Security
     ///
-    /// - **Fail Fast**: All validation happens before allocating memory for the
+    /// - Fail Fast: All validation happens before allocating memory for the
     ///   payload. Malformed headers are rejected without copying data.
     ///
-    /// - **Exact Size**: We only read exactly `payload_size` bytes from the
-    ///   buffer. Trailing data is ignored, preventing buffer over-read.
+    /// - Exact Size: We only read exactly `payload_size` bytes from the buffer.
+    ///   Trailing data is ignored, preventing buffer over-read.
     ///
-    /// - **No Deserialization**: This function does NOT parse CBOR. It only
+    /// - No Deserialization: This function does NOT parse CBOR. It only
     ///   validates structural framing. Payload deserialization happens later
     ///   with explicit error handling.
     pub fn decode(bytes: &[u8]) -> Result<Self> {

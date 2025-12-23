@@ -10,23 +10,11 @@ use super::{Storage, StorageError};
 
 /// In-memory storage implementation for testing and simulation
 ///
-/// This implementation uses HashMap for fast lookups and Vec for ordered frame
-/// storage. All state is wrapped in Arc<Mutex<>> to allow Clone and concurrent
-/// access.
-///
-/// # Thread Safety
-///
-/// This implementation is thread-safe through Mutex. However, it uses
-/// `lock().expect()` which will panic if the mutex is poisoned (a thread
-/// panicked while holding the lock). This is acceptable for test code.
-///
-/// # Performance
-///
-/// - store_frame: O(1) amortized
-/// - latest_log_index: O(1)
-/// - load_frames: O(limit)
-/// - store_mls_state: O(1)
-/// - load_mls_state: O(1)
+/// Uses HashMap for fast lookups and Vec for ordered frame storage. All state
+/// is wrapped in Arc<Mutex<>> to allow Clone and concurrent access. Thread-safe
+/// through Mutex, but uses lock().expect() which will panic if the mutex is
+/// poisoned - acceptable for test code. All operations are O(1) except
+/// load_frames which is O(limit).
 #[derive(Clone)]
 pub struct MemoryStorage {
     inner: Arc<Mutex<MemoryStorageInner>>,
@@ -51,7 +39,7 @@ impl MemoryStorage {
         }
     }
 
-    /// Get the number of rooms with stored frames
+    /// Number of rooms with stored frames.
     ///
     /// Useful for debugging and testing.
     ///
@@ -63,7 +51,7 @@ impl MemoryStorage {
         self.inner.lock().expect("MemoryStorage mutex poisoned").frames.len()
     }
 
-    /// Get the total number of frames across all rooms
+    /// Total number of frames across all rooms.
     ///
     /// Useful for debugging and testing.
     ///

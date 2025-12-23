@@ -1,36 +1,19 @@
-//! Sender Keys: Data Plane encryption for high-throughput messaging
+//! High-throughput message encryption using Sender Keys.
 //!
-//! This module implements the Sender Keys protocol which provides ~100x
-//! throughput improvement over pure MLS by separating:
+//! Separates control plane (MLS) from data plane (message encryption). MLS
+//! gives us forward secrecy and key agreement, but it's too slow for encrypting
+//! every message at 10K+ msg/sec. Instead, we derive per-sender ratchets from
+//! each MLS epoch and use those for fast symmetric encryption.
 //!
-//! - Control Plane (MLS): Membership, key agreement, epoch advancement
-//! - Data Plane (Sender Keys): Per-sender symmetric encryption with forward
-//!   secrecy
+//! Each epoch, MLS gives us an epoch secret. We derive a unique seed for each
+//! sender (via HKDF), initialize a symmetric ratchet, and use that to generate
+//! message keys. Messages are encrypted with XChaCha20-Poly1305.
 //!
-//! # Architecture
+//! # Security
 //!
-//! ```text
-//! MLS Epoch Secret
-//!        │
-//!        ▼ HKDF-Expand
-//! SenderKeySeed[sender_index]
-//!        │
-//!        ▼ Initialize
-//! SymmetricRatchet
-//!        │
-//!        ▼ Advance
-//! MessageKey[generation]
-//!        │
-//!        ▼ Encrypt
-//! XChaCha20-Poly1305 Ciphertext
-//! ```
-//!
-//! # Security Properties
-//!
-//! - Forward Secrecy: Old chain keys are deleted after deriving the next one
-//! - Post-Compromise Security: New epoch = new sender keys (via MLS)
-//! - Sender Authentication: Each sender has unique keys derived from their
-//!   index
+//! Forward secrecy comes from MLS epoch rotation. Sender isolation means
+//! compromising one sender doesn't expose other senders' messages. AEAD
+//! prevents tampering and provides sender authentication.
 
 pub mod derivation;
 pub mod encryption;

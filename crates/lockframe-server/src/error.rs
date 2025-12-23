@@ -7,19 +7,33 @@ use crate::server_error::ServerError as DriverError;
 /// Errors that can occur in the server.
 #[derive(Debug)]
 pub enum ServerError {
-    /// Configuration error
+    /// Configuration error (invalid bind address, missing TLS certs, etc.).
+    ///
+    /// These are fatal errors that prevent server startup. Fix configuration
+    /// and restart.
     Config(String),
 
-    /// Transport/network error
+    /// Transport/network error (connection failure, I/O error, etc.).
+    ///
+    /// May be transient (network issues) or fatal (bind address in use).
+    /// Check error message for details.
     Transport(String),
 
-    /// Protocol error
+    /// Protocol error (invalid frame format, unsupported version, etc.).
+    ///
+    /// Indicates a client sent malformed data. Fatal for that connection,
+    /// but server can continue serving other clients.
     Protocol(String),
 
-    /// Internal error
+    /// Internal error (unexpected state, logic bug, etc.).
+    ///
+    /// Should never happen in correct implementation. Indicates a bug.
+    /// Fatal - report as issue.
     Internal(String),
 
-    /// Driver error
+    /// Driver error (from ServerDriver processing).
+    ///
+    /// Wraps errors from the core server logic. See DriverError for details.
     Driver(DriverError),
 }
 

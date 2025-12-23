@@ -1,21 +1,11 @@
-//! Server-side frame sequencer with total ordering
+//! Server-side frame sequencer with total ordering.
 //!
-//! The Sequencer is the "brain" of the Lockframe protocol. It assigns monotonic
-//! log indices to frames, enforcing total ordering across all clients in a
-//! room.
+//! Assigns monotonic log indices to frames, enforcing total ordering across
+//! all clients in a room. Maintains next_log_index per room, cached from
+//! storage.
 //!
-//! # Architecture
-//!
-//! - Action-based: Returns actions instead of performing I/O directly
-//! - Deterministic: Same input frames → same log_index assignment
-//! - Stateful: Maintains next_log_index per room (cached from Storage)
-//!
-//! # Flow
-//!
-//! 1. Load State: Get latest log_index from storage
-//! 2. Validate Frame Structure: Check magic, version, payload size
-//! 3. Sequence: Assign next log_index to frame
-//! 4. Return Actions: StoreFrame, BroadcastFrame, etc.
+//! Flow: load state from storage, validate frame structure (magic, version,
+//! payload size), assign next log_index, return sequencing actions.
 
 use std::collections::HashMap;
 
@@ -168,10 +158,6 @@ impl Sequencer {
     /// - Pre: Frame must be validated by caller (RoomManager)
     /// - Post: If accepted, frame.log_index will be set to next available index
     /// - Post: room.next_log_index will be incremented
-    ///
-    /// # Errors
-    ///
-    /// Returns `SequencerError` if storage access fails or validation errors.
     pub fn process_frame(
         &mut self,
         frame: Frame,
@@ -238,7 +224,7 @@ impl Sequencer {
         ])
     }
 
-    /// Get the next log index for a room (for testing/debugging)
+    /// Next log index that will be assigned (for testing/debugging).
     #[cfg(test)]
     pub fn next_log_index(&self, room_id: u128) -> Option<u64> {
         self.rooms.get(&room_id).map(|r| r.next_log_index)
@@ -255,11 +241,6 @@ impl Default for Sequencer {
 ///
 /// This creates a new FrameHeader with the updated log_index while
 /// reusing the payload bytes (zero-copy via Bytes::clone which is Arc-based).
-///
-/// # Errors
-///
-/// This function currently cannot fail but returns Result for API consistency.
-/// Future versions may add validation that can fail.
 fn rebuild_frame_with_index(original: Frame, log_index: u64) -> Result<Frame, SequencerError> {
     let mut new_header = original.header;
     new_header.set_log_index(log_index);

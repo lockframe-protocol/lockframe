@@ -13,39 +13,26 @@ use crate::{
 
 /// Fixed 128-byte frame header (Big Endian network byte order)
 ///
-/// All multi-byte integers are stored in Big Endian format to match
-/// network byte order. Fields are stored as raw byte arrays to avoid
-/// alignment issues with `#[repr(C, packed)]`.
+/// All multi-byte integers are stored in Big Endian format to match network
+/// byte order. Fields are stored as raw byte arrays to avoid alignment issues.
 ///
-/// # Cache Line Optimization
+/// The header fits exactly two 64-byte CPU cache lines: bytes 0-63 contain all
+/// routing/sequencing data (the sequencer can route frames touching only this
+/// line), and bytes 64-127 contain the authentication signature (fetched only
+/// during verification). This minimizes memory bandwidth and maximizes cache
+/// locality for the O(1) routing hot path at 15K+ frames/sec.
 ///
-/// The header is carefully laid out to fit exactly two 64-byte CPU cache lines:
+/// # Security
 ///
-/// - **Cache Line 1 (bytes 0-63):** Contains all routing/sequencing data. The
-///   sequencer can route frames touching only this cache line.
+/// The #[repr(C, packed)] layout with zerocopy traits ensures this struct can
+/// be safely cast from untrusted network bytes - all 128-byte patterns are
+/// valid, preventing undefined behavior. The signature field binds the entire
+/// header to an MLS epoch. Verification happens separately after parsing to
+/// allow routing before authentication. The log_index provides a monotonic
+/// sequence number   per room. Combined with the `hlc_timestamp`, this prevents
+/// replay attacks.
 ///
-/// - **Cache Line 2 (bytes 64-127):** Contains the authentication signature.
-///   Only fetched during verification, which can happen on a separate thread.
-///
-/// This layout minimizes memory bandwidth and maximizes cache locality for
-/// the O(1) routing hot path at 15K+ frames/sec.
-///
-/// # Security Properties
-///
-/// - **Zero-Copy Safety**: The `#[repr(C, packed)]` layout with `zerocopy`
-///   traits ensures that this struct can be safely cast from untrusted network
-///   bytes. All 128-byte patterns are valid (no invalid bit patterns),
-///   preventing undefined behavior.
-///
-/// - **Signature Binding**: The `signature` field binds the entire header to an
-///   MLS epoch. Verification happens separately after parsing to allow routing
-///   before authentication.
-///
-/// - **Replay Protection**: The `log_index` provides a monotonic sequence
-///   number per room. Combined with the `hlc_timestamp`, this prevents replay
-///   attacks.
-///
-/// - **Epoch Isolation**: The `epoch` field ensures frames cannot be replayed
+/// - Epoch Isolation: The `epoch` field ensures frames cannot be replayed
 ///   across different MLS group generations, even if the signature verifies.
 #[repr(C, packed)]
 #[derive(Clone, Copy, FromBytes, IntoBytes, KnownLayout, Immutable)]
@@ -120,26 +107,25 @@ impl FrameHeader {
     ///
     /// # Errors
     ///
-    /// Returns `ProtocolError` if:
-    /// - Buffer is too short (< 128 bytes)
-    /// - Magic number is invalid
-    /// - Protocol version is unsupported
-    /// - Payload size exceeds maximum
+    /// - `ProtocolError::FrameTooShort` if buffer is too short (< 128 bytes)
+    /// - `ProtocolError::InvalidMagic` if magic number is invalid
+    /// - `ProtocolError::UnsupportedVersion` if protocol version is unsupported
+    /// - `ProtocolError::PayloadTooLarge` if payload size exceeds maximum
     ///
     /// # Security
     ///
-    /// - **Zero-Copy Safety**: The `zerocopy` crate verifies at compile-time
-    ///   that `FrameHeader` has a stable memory layout. All bit patterns are
-    ///   valid (no invalid representations), so casting arbitrary bytes cannot
-    ///   cause undefined behavior.
+    /// - Zero-Copy Safety: The `zerocopy` crate verifies at compile-time that
+    ///   `FrameHeader` has a stable memory layout. All bit patterns are valid
+    ///   (no invalid representations), so casting arbitrary bytes cannot cause
+    ///   undefined behavior.
     ///
-    /// - **Validation Order**: We validate cheapest-to-check properties first
+    /// - Validation Order: We validate cheapest-to-check properties first
     ///   (size, magic) before more expensive ones (version, payload size). This
     ///   fails fast on garbage data.
     ///
-    /// - **No Signature Verification**: This function does NOT verify the
-    ///   Ed25519 signature. Headers are structurally valid but not
-    ///   authenticated. Signature verification happens later in the MLS layer.
+    /// - No Signature Verification: This function does NOT verify the Ed25519
+    ///   signature. Headers are structurally valid but not authenticated.
+    ///   Signature verification happens later in the MLS layer.
     pub fn from_bytes(bytes: &[u8]) -> Result<&Self> {
         let header = Self::ref_from_prefix(bytes)
             .map_err(|_| ProtocolError::FrameTooShort {
@@ -177,65 +163,64 @@ impl FrameHeader {
         arr
     }
 
-    /// Get the magic number
+    /// Protocol magic number (0x4C4F4652 = "LOFR").
     #[must_use]
     pub fn magic(&self) -> u32 {
         u32::from_be_bytes(self.magic)
     }
 
-    /// Get the protocol version
+    /// Protocol version byte (currently 0x01).
     #[must_use]
     pub fn version(&self) -> u8 {
         self.version
     }
 
-    /// Get the frame flags
+    /// Frame processing flags (compression, priority, etc.).
     #[must_use]
     pub fn flags(&self) -> FrameFlags {
         FrameFlags::from_byte(self.flags)
     }
 
-    /// Get the opcode
+    /// Operation code as raw u16.
     #[must_use]
     pub fn opcode(&self) -> u16 {
         u16::from_be_bytes(self.opcode)
     }
 
-    /// Get the opcode as an enum (if valid)
+    /// Operation code as enum. `None` if unrecognized.
     #[must_use]
     pub fn opcode_enum(&self) -> Option<Opcode> {
         Opcode::from_u16(self.opcode())
     }
 
-    /// Get the request ID
+    /// Client-assigned nonce for request/response correlation.
     #[must_use]
     pub fn request_id(&self) -> u32 {
         u32::from_be_bytes(self.request_id)
     }
 
-    /// Get the room ID as u128
+    /// 128-bit room UUID.
     #[must_use]
     pub fn room_id(&self) -> u128 {
         u128::from_be_bytes(self.room_id)
     }
 
-    /// Get the room ID as raw bytes
+    /// Room UUID as raw big-endian bytes.
     #[must_use]
     pub fn room_id_bytes(&self) -> &[u8; 16] {
         &self.room_id
     }
 
-    /// Get the sender ID
+    /// Stable sender identifier (assigned during handshake).
     #[must_use]
     pub fn sender_id(&self) -> u64 {
         u64::from_be_bytes(self.sender_id)
     }
 
-    /// Get the log index (sequence number) for sequenced frames.
+    /// Monotonic sequence number within this room's log.
     ///
-    /// This field is only meaningful for sequenced opcodes (AppMessage, Commit,
-    /// Proposal, etc.). For Welcome frames, use [`recipient_id()`] instead.
-    /// Debug builds will assert if called on Welcome frames.
+    /// Only meaningful for sequenced opcodes (AppMessage, Commit, Proposal).
+    /// For Welcome frames, use [`recipient_id()`] instead.
     #[must_use]
     pub fn log_index(&self) -> u64 {
         debug_assert!(
@@ -245,11 +230,10 @@ impl FrameHeader {
         u64::from_be_bytes(self.context_id)
     }
 
-    /// Get the recipient ID for Welcome frames.
+    /// Target member for Welcome routing.
     ///
-    /// This field identifies the target member for Welcome routing. It is only
-    /// meaningful for Welcome frames. For sequenced frames, use [`log_index()`]
-    /// instead. Debug builds will assert if called on non-Welcome frames.
+    /// Only meaningful for Welcome frames. For sequenced frames, use
+    /// [`log_index()`] instead.
     #[must_use]
     pub fn recipient_id(&self) -> u64 {
         debug_assert!(
@@ -259,35 +243,33 @@ impl FrameHeader {
         u64::from_be_bytes(self.context_id)
     }
 
-    /// Get the HLC timestamp
+    /// Hybrid Logical Clock timestamp for causality and replay protection.
     #[must_use]
     pub fn hlc_timestamp(&self) -> u64 {
         u64::from_be_bytes(self.hlc_timestamp)
     }
 
-    /// Get the MLS epoch
+    /// MLS epoch number (increments on membership changes).
     #[must_use]
     pub fn epoch(&self) -> u64 {
         u64::from_be_bytes(self.epoch)
     }
 
-    /// Get the payload size
+    /// Payload size in bytes (max 16 MB).
     #[must_use]
     pub fn payload_size(&self) -> u32 {
         u32::from_be_bytes(self.payload_size)
     }
 
-    /// Get the signature
+    /// Ed25519 signature over header fields.
     #[must_use]
     pub fn signature(&self) -> &[u8; 64] {
         &self.signature
     }
 
-    /// Get the data that should be signed by clients
+    /// Bytes to sign (excludes mutable context_id and signature itself).
     ///
-    /// This method returns exactly the bytes that should be signed, excluding
-    /// server-modified fields like context_id (log_index) and the signature
-    /// itself. The signing scope is bytes 0-39 + 48-63 (56 bytes total).
+    /// Returns bytes 0-39 + 48-63 (56 bytes total).
     #[must_use]
     pub fn signing_data(&self) -> [u8; 56] {
         let bytes = self.to_bytes();
@@ -297,17 +279,15 @@ impl FrameHeader {
         data
     }
 
-    /// Set the room ID
+    /// Update room UUID.
     pub fn set_room_id(&mut self, room_id: u128) {
         self.room_id = room_id.to_be_bytes();
     }
 
-    /// Set the log index (for server sequencing).
+    /// Assign log index (sequencer use only).
     ///
-    /// Used by the sequencer to assign monotonic log indices to frames after
-    /// validation. Only valid for sequenced opcodes (AppMessage, Commit, etc.).
-    /// For Welcome frames, use [`set_recipient_id()`] instead.
-    /// Debug builds will assert if called on Welcome frames.
+    /// Only valid for sequenced opcodes. For Welcome, use
+    /// [`set_recipient_id()`].
     pub fn set_log_index(&mut self, log_index: u64) {
         debug_assert!(
             self.opcode_enum() != Some(Opcode::Welcome),
@@ -316,12 +296,9 @@ impl FrameHeader {
         self.context_id = log_index.to_be_bytes();
     }
 
-    /// Set the recipient ID for Welcome frames.
+    /// Set routing target for Welcome frames.
     ///
-    /// The server uses this to route the Welcome to the correct session.
-    /// Only valid for Welcome frames. For sequenced frames, use
-    /// [`set_log_index()`] instead. Debug builds will assert if called on
-    /// non-Welcome frames.
+    /// Only valid for Welcome. For sequenced frames, use [`set_log_index()`].
     pub fn set_recipient_id(&mut self, recipient_id: u64) {
         debug_assert!(
             self.opcode_enum() == Some(Opcode::Welcome),
@@ -330,45 +307,32 @@ impl FrameHeader {
         self.context_id = recipient_id.to_be_bytes();
     }
 
-    /// Set the sender ID
+    /// Update sender identifier.
     pub fn set_sender_id(&mut self, sender_id: u64) {
         self.sender_id = sender_id.to_be_bytes();
     }
 
-    /// Set the epoch
+    /// Update MLS epoch.
     pub fn set_epoch(&mut self, epoch: u64) {
         self.epoch = epoch.to_be_bytes();
     }
 
-    /// Set the Ed25519 signature
-    ///
-    /// The signature should be computed over the first 64 bytes of the header
-    /// (everything before the signature field).
+    /// Set Ed25519 signature (computed over [`signing_data()`]).
     pub fn set_signature(&mut self, signature: [u8; 64]) {
         self.signature = signature;
     }
 
-    /// Set the request ID for request/response correlation.
-    ///
-    /// The request ID allows clients to match responses to their original
-    /// requests. Set by clients when sending requests.
+    /// Set client request nonce for response correlation.
     pub fn set_request_id(&mut self, request_id: u32) {
         self.request_id = request_id.to_be_bytes();
     }
 
-    /// Set the frame flags.
-    ///
-    /// Flags control frame processing behavior (compression, fragmentation,
-    /// priority, etc.). See [`FrameFlags`] for available flags.
+    /// Update frame processing flags.
     pub fn set_flags(&mut self, flags: FrameFlags) {
         self.flags = flags.to_byte();
     }
 
-    /// Set the HLC (Hybrid Logical Clock) timestamp.
-    ///
-    /// Used for causality tracking and replay protection. The timestamp
-    /// combines physical time with a logical counter to ensure unique,
-    /// monotonically increasing values even with clock drift.
+    /// Set HLC timestamp for causality tracking.
     pub fn set_hlc_timestamp(&mut self, timestamp: u64) {
         self.hlc_timestamp = timestamp.to_be_bytes();
     }

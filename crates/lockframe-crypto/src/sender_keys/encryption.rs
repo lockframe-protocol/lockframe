@@ -32,7 +32,7 @@ pub struct EncryptedMessage {
 }
 
 impl EncryptedMessage {
-    /// Get the plaintext length (ciphertext minus tag)
+    /// Plaintext length (ciphertext length minus authentication tag).
     pub fn plaintext_len(&self) -> usize {
         self.ciphertext.len().saturating_sub(POLY1305_TAG_SIZE)
     }
@@ -77,9 +77,7 @@ pub fn encrypt_message(
 ///
 /// # Errors
 ///
-/// Returns `DecryptionFailed` if:
-/// - Authentication tag doesn't match (tampering detected)
-/// - Key is incorrect
+/// - `DecryptionFailed`: If authentication tag or key is incorrect (tamper)
 pub fn decrypt_message(
     encrypted: &EncryptedMessage,
     message_key: &MessageKey,

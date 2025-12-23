@@ -1,15 +1,14 @@
-//!  Client
+//! Client
 //!
 //! Action-based client state machine for the Lockframe protocol. Manages room
 //! memberships, MLS group operations, and sender key encryption.
 //!
 //! # Architecture
 //!
-//! The client is a pure state machine that:
-//! - Receives events from the caller (frames, ticks, application intents)
-//! - Produces actions for the caller to execute (send frames, deliver messages)
-//! - Uses the `Environment` trait for time and randomness (deterministic
-//!   testing)
+//! The client follows the same Sans-IO and Action-Based patterns as
+//! [`lockframe_core`]. It receives events ([`ClientEvent`]), processes them
+//! through pure state machine logic, and returns actions ([`ClientAction`]) for
+//! the caller to execute.
 //!
 //! # Components
 //!

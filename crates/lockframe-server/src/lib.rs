@@ -1,21 +1,21 @@
 //! Lockframe production server.
 //!
-//! This crate provides the production server implementation using:
-//! - Quinn for QUIC transport
-//! - Tokio for async runtime
-//! - System time and cryptographic RNG
+//! Production server implementation using Quinn for QUIC transport, Tokio for
+//! async runtime, and system time with cryptographic RNG.
 //!
-//! ## Architecture
+//! # Architecture
 //!
-//! ```text
-//! lockframe-server
-//!   ├─ SystemEnv          (production Environment impl)
-//!   ├─ QuinnTransport     (QUIC via Quinn)
-//!   ├─ ServerDriver       (action-based orchestrator)
-//!   ├─ RoomManager        (MLS validation + sequencing)
-//!   ├─ Sequencer          (total ordering)
-//!   └─ Storage            (frame persistence)
-//! ```
+//! This crate provides production "glue" that wraps [`lockframe_core`]'s
+//! action-based logic with real I/O. The [`ServerDriver`] follows the Sans-IO
+//! pattern (see [`lockframe_core`] for details), while [`Server`] executes the
+//! actions using Quinn QUIC and Tokio async runtime.
+//!
+//! # Components
+//!
+//! - [`ServerDriver`]: Action-based orchestrator (pure logic, no I/O)
+//! - [`Server`]: Production runtime that executes ServerDriver actions
+//! - [`QuinnTransport`]: QUIC transport via Quinn library
+//! - [`SystemEnv`]: Production environment (real time, crypto RNG)
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
@@ -94,12 +94,6 @@ pub struct Server {
 
 impl Server {
     /// Create and bind a new server.
-    ///
-    /// # Errors
-    ///
-    /// Returns error if:
-    /// - Binding to the address fails
-    /// - TLS configuration is invalid
     pub async fn bind(config: ServerRuntimeConfig) -> Result<Self, ServerError> {
         let env = SystemEnv::new();
         let storage = MemoryStorage::new();
@@ -141,7 +135,7 @@ impl Server {
         }
     }
 
-    /// Get the local address the server is bound to.
+    /// Local address the server is bound to.
     pub fn local_addr(&self) -> Result<std::net::SocketAddr, ServerError> {
         self.transport.local_addr()
     }
@@ -154,22 +148,22 @@ async fn handle_connection(
     shared: Arc<SharedState>,
     _env: SystemEnv,
 ) -> Result<(), ServerError> {
-    let conn_id = {
+    let session_id = {
         let mut buf = [0u8; 8];
         getrandom::fill(&mut buf).map_err(|e| ServerError::Internal(e.to_string()))?;
         u64::from_le_bytes(buf)
     };
 
-    tracing::debug!("New connection: {}", conn_id);
+    tracing::debug!("New connection: {}", session_id);
 
     {
         let mut connections = shared.connections.write().await;
-        connections.insert(conn_id, conn.clone());
+        connections.insert(session_id, conn.clone());
     }
 
     {
         let mut driver = driver.lock().await;
-        let actions = driver.process_event(ServerEvent::ConnectionAccepted { conn_id })?;
+        let actions = driver.process_event(ServerEvent::ConnectionAccepted { session_id })?;
         execute_actions(&mut *driver, actions, &shared).await?;
     }
 
@@ -180,7 +174,7 @@ async fn handle_connection(
                 let shared = Arc::clone(&shared);
 
                 tokio::spawn(async move {
-                    if let Err(e) = handle_stream(conn_id, send, recv, driver, &shared).await {
+                    if let Err(e) = handle_stream(session_id, send, recv, driver, &shared).await {
                         tracing::debug!("Stream error: {}", e);
                     }
                 });
@@ -194,13 +188,13 @@ async fn handle_connection(
 
     {
         let mut connections = shared.connections.write().await;
-        connections.remove(&conn_id);
+        connections.remove(&session_id);
     }
 
     {
         let mut driver = driver.lock().await;
         let actions = driver.process_event(ServerEvent::ConnectionClosed {
-            conn_id,
+            session_id,
             reason: "connection closed".to_string(),
         })?;
         execute_actions(&mut *driver, actions, &shared).await?;
@@ -211,7 +205,7 @@ async fn handle_connection(
 
 /// Handle a single bidirectional stream.
 async fn handle_stream(
-    conn_id: u64,
+    session_id: u64,
     send: quinn::SendStream,
     mut recv: quinn::RecvStream,
     driver: Arc<tokio::sync::Mutex<ServerDriver<SystemEnv, MemoryStorage>>>,
@@ -261,7 +255,7 @@ async fn handle_stream(
 
         let actions = {
             let mut driver = driver.lock().await;
-            match driver.process_event(ServerEvent::FrameReceived { conn_id, frame }) {
+            match driver.process_event(ServerEvent::FrameReceived { session_id, frame }) {
                 Ok(actions) => actions,
                 Err(e) => {
                     tracing::warn!("Frame processing error: {}", e);

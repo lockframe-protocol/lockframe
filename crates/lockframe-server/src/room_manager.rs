@@ -1,19 +1,12 @@
 //! Room Manager
 //!
-//! Orchestrates MLS validation and frame sequencing for rooms.
+//! Orchestrates MLS validation and frame sequencing for rooms. Creates rooms
+//! with authorization metadata, verifies frames against group state before
+//! sequencing, and assigns log indices for total ordering.
 //!
-//! ## Responsibilities
-//!
-//! - Room Lifecycle: Create rooms with authorization metadata
-//! - MLS Validation: Verify frames against group state before sequencing
-//! - Frame Sequencing: Assign log indices for total ordering
-//! - Action Generation: Return actions for driver to execute (action-based)
-//!
-//! ## Design
-//!
-//! - Explicit room creation: Prevents accidental rooms, enables future auth
-//! - RoomMetadata: Extension point for permissions/roles (added later)
-//! - Action-based: All methods return actions, no direct I/O
+//! Rooms must be explicitly created (no lazy creation) to prevent accidental
+//! rooms and enable future auth. RoomMetadata is an extension point for
+//! permissions/roles.
 
 use std::collections::HashMap;
 
@@ -250,7 +243,7 @@ where
         self.room_metadata.contains_key(&room_id)
     }
 
-    /// Get the current epoch for a room.
+    /// Current MLS epoch for a room. `None` if room doesn't exist.
     ///
     /// Returns `None` if the room doesn't exist.
     pub fn epoch(&self, room_id: u128) -> Option<u64> {
@@ -259,10 +252,6 @@ where
 
     /// Creates a room with the specified ID and records the creator for
     /// future authorization checks. Prevents duplicate room creation.
-    ///
-    /// # Errors
-    ///
-    /// Returns `RoomError::RoomAlreadyExists` if the room ID already exists.
     pub fn create_room(&mut self, room_id: u128, creator: u64, env: &E) -> Result<(), RoomError> {
         if self.has_room(room_id) {
             return Err(RoomError::RoomAlreadyExists(room_id));
@@ -286,11 +275,6 @@ where
     ///
     /// Creates MLS commits and welcomes for adding new members.
     /// The returned actions should be executed by the driver.
-    ///
-    /// # Errors
-    ///
-    /// Returns `RoomError::RoomNotFound` if the room doesn't exist.
-    /// Returns `RoomError::MlsValidation` if MLS operations fail.
     pub fn add_members(
         &mut self,
         room_id: u128,
@@ -305,12 +289,6 @@ where
     ///
     /// Creates an MLS commit to remove the specified members.
     /// The returned actions should be executed by the driver.
-    ///
-    /// # Errors
-    ///
-    /// Returns `RoomError::RoomNotFound` if the room doesn't exist.
-    /// Returns `RoomError::MlsValidation` if any member ID is not found
-    /// or if the caller tries to remove themselves (use `leave_room` instead).
     pub fn remove_members(
         &mut self,
         room_id: u128,
@@ -326,11 +304,6 @@ where
     /// Creates an MLS Remove proposal for self-removal. In MLS, members
     /// cannot unilaterally remove themselves - another member must commit
     /// the removal.
-    ///
-    /// # Errors
-    ///
-    /// Returns `RoomError::RoomNotFound` if the room doesn't exist.
-    /// Returns `RoomError::MlsValidation` if proposal creation fails.
     pub fn leave_room(
         &mut self,
         room_id: u128,
@@ -345,19 +318,10 @@ where
     /// Loads frames from storage starting at `from_log_index` and returns
     /// a `SendSyncResponse` action for the driver to send back to the client.
     ///
-    /// # Protocol Flow
-    ///
-    /// 1. Client detects epoch mismatch or commit timeout
-    /// 2. Client sends SyncRequest with `from_log_index`
-    /// 3. Server calls this method to load frames from storage
-    /// 4. Server sends SyncResponse with frames batch
-    /// 5. Client processes frames in order to catch up
-    /// 6. If `has_more` is true, client sends another SyncRequest
-    ///
-    /// # Errors
-    ///
-    /// Returns `RoomError::RoomNotFound` if the room doesn't exist.
-    /// Returns `RoomError::Storage` if frame loading fails.
+    /// Client detects epoch mismatch or commit timeout, sends SyncRequest with
+    /// `from_log_index`, server loads frames from storage and sends
+    /// SyncResponse. Client processes frames in order to catch up. If
+    /// `has_more` is true, client sends another SyncRequest.
     pub fn handle_sync_request(
         &self,
         room_id: u128,
@@ -410,12 +374,6 @@ where
     /// 3. Sequence the frame (assign log index)
     /// 4. Convert SequencerAction to RoomAction
     /// 5. Return actions for driver to execute
-    ///
-    /// # Errors
-    ///
-    /// Returns `RoomError::RoomNotFound` if room doesn't exist.
-    /// Returns `RoomError::MlsValidation` if frame fails validation.
-    /// Returns `RoomError::Sequencing` if sequencer encounters an error.
     pub fn process_frame(
         &mut self,
         frame: Frame,
@@ -442,7 +400,7 @@ where
         // 4. NOW validate signatures on the sequenced frames
         self.validate_sequenced_actions_signatures(&sequencer_actions, mls_state.as_ref())?;
 
-        // 4. Convert SequencerAction to RoomAction
+        // 5. Convert SequencerAction to RoomAction
         let mut room_actions: Vec<RoomAction> = sequencer_actions
             .into_iter()
             .map(|action| match action {
@@ -468,7 +426,7 @@ where
             })
             .collect();
 
-        // 5. Update MLS state if this was a Commit
+        // 6. Update MLS state if this was a Commit
         if frame_for_mls.is_some() {
             let group = self.groups.get_mut(&room_id).ok_or(RoomError::RoomNotFound(room_id))?;
 
@@ -485,7 +443,6 @@ where
                 let _mls_actions = group.process_message(commit_frame.clone())?;
             }
 
-            // Export the updated MLS state for persistence
             let state = group.export_group_state()?;
             room_actions.push(RoomAction::PersistMlsState { room_id, state, processed_at: now });
         }

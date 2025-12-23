@@ -95,17 +95,14 @@ fn extract_member_id_from_credential(credential: &Credential) -> Result<MemberId
 /// Client-side MLS group state.
 ///
 /// Represents participation in a single MLS group (room). Clients can be
-/// members of multiple groups simultaneously.
+/// members of multiple groups simultaneously. Generic over Environment
+/// implementation (SimEnv or SystemEnv).
 ///
 /// # Invariants
 ///
 /// - Epoch only increases (never decreases)
 /// - All members at same epoch have identical tree hash
 /// - Only members can encrypt/decrypt messages for current epoch
-///
-/// # Type Parameters
-///
-/// - `E`: The environment implementation (SimEnv or SystemEnv)
 pub struct MlsGroup<E: Environment> {
     /// Room identifier
     room_id: RoomId,
@@ -144,11 +141,6 @@ impl<E: Environment> MlsGroup<E> {
     ///
     /// Returns a tuple containing a new `MlsGroup` instance and any actions to
     /// execute.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if MLS group creation fails (crypto initialization,
-    /// etc.)
     #[allow(clippy::too_many_lines)]
     pub fn new(
         env: E,
@@ -184,27 +176,27 @@ impl<E: Environment> MlsGroup<E> {
         Ok((group, actions))
     }
 
-    /// Get the current epoch number.
+    /// MLS epoch number (increments on Commit).
     pub fn epoch(&self) -> u64 {
         self.mls_group.epoch().as_u64()
     }
 
-    /// Get our member ID.
+    /// Our member identifier in this group.
     pub fn member_id(&self) -> MemberId {
         self.member_id
     }
 
-    /// Get the room ID.
+    /// Room UUID this group is bound to.
     pub fn room_id(&self) -> RoomId {
         self.room_id
     }
 
-    /// Get the MLS group ID.
+    /// MLS group identifier (cryptographic binding).
     pub fn group_id(&self) -> &GroupId {
         self.mls_group.group_id()
     }
 
-    /// Get our leaf index in the MLS tree.
+    /// Our position in the ratchet tree.
     pub fn own_leaf_index(&self) -> u32 {
         self.mls_group.own_leaf_index().u32()
     }
@@ -227,20 +219,15 @@ impl<E: Environment> MlsGroup<E> {
         }
     }
 
-    /// Get all member leaf indices in the group.
-    ///
-    /// Returns the leaf indices of all current group members, which are
-    /// needed for sender key initialization.
+    /// All member positions in the ratchet tree (for sender key derivation).
     pub fn member_leaf_indices(&self) -> Vec<u32> {
         self.mls_group.members().map(|m| m.index.u32()).collect()
     }
 
-    /// Look up a member's ID by their leaf index.
+    /// Member ID at given leaf index. `None` if position is empty.
     ///
-    /// This is used to verify that a frame's sender_id matches the sender_index
-    /// from an encrypted payload (binding the sender identity to the key used).
-    ///
-    /// Returns `None` if no member exists at the given leaf index.
+    /// Used to bind sender_id (frame header) to sender_index (encrypted
+    /// payload).
     pub fn member_id_by_leaf_index(&self, leaf_index: u32) -> Option<MemberId> {
         self.mls_group.members().find_map(|m| {
             if m.index.u32() == leaf_index {
@@ -251,13 +238,7 @@ impl<E: Environment> MlsGroup<E> {
         })
     }
 
-    /// Export a secret derived from the current epoch's key schedule.
-    ///
-    /// This is used to derive sender keys for data-plane encryption.
-    /// The secret is bound to the current epoch and the provided label.
-    /// # Errors
-    ///
-    /// Returns an error if the export fails (e.g., invalid length).
+    /// Derive secret from current epoch's key schedule (for sender keys).
     pub fn export_secret(
         &self,
         label: &str,
@@ -274,10 +255,7 @@ impl<E: Environment> MlsGroup<E> {
         self.pending_commit.is_some()
     }
 
-    /// Check if a pending commit has timed out.
-    ///
-    /// Returns true if we have a pending commit that's been waiting for at
-    /// least the timeout duration (inclusive).
+    /// Pending commit has exceeded timeout duration.
     pub fn is_commit_timeout(&self, now: std::time::Instant, timeout: Duration) -> bool {
         self.pending_commit
             .as_ref()
@@ -301,10 +279,6 @@ impl<E: Environment> MlsGroup<E> {
     ///
     /// This is called when we created a commit (e.g., via add_members) and
     /// the sequencer has confirmed it. This advances the group's epoch.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if there's no pending commit or if merging fails.
     pub fn merge_pending_commit(&mut self) -> Result<(), MlsError> {
         let expected_epoch = self
             .pending_commit
@@ -338,10 +312,6 @@ impl<E: Environment> MlsGroup<E> {
     /// Checks:
     /// - Frame epoch matches group epoch
     /// - Sender is a member of the group
-    ///
-    /// # Errors
-    ///
-    /// Returns `MlsError` if validation fails.
     pub fn validate_frame(
         &self,
         frame: &Frame,
@@ -363,13 +333,6 @@ impl<E: Environment> MlsGroup<E> {
     ///
     /// Processes an MLS protocol message, updates the group state, and returns
     /// any actions that need to be taken as a result.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if:
-    /// - The message cannot be deserialized
-    /// - The message is invalid (wrong epoch, bad signature, etc.)
-    /// - Crypto operations fail
     pub fn process_message(&mut self, frame: Frame) -> Result<Vec<MlsAction>, MlsError> {
         let mls_message =
             MlsMessageIn::tls_deserialize_exact(frame.payload.as_ref()).map_err(|e| {
@@ -434,10 +397,6 @@ impl<E: Environment> MlsGroup<E> {
     ///
     /// Encrypts a plaintext message using the current epoch's encryption key
     /// and returns a frame ready to send to the sequencer.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if encryption fails or the group is not active.
     pub fn create_message(&mut self, plaintext: &[u8]) -> Result<Vec<MlsAction>, MlsError> {
         let mls_message = self
             .mls_group
@@ -458,12 +417,6 @@ impl<E: Environment> MlsGroup<E> {
     /// Creates a commit that adds the specified members to the group. The
     /// commit must be sent to the sequencer and will advance the epoch when
     /// accepted.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if:
-    /// - KeyPackage deserialization fails
-    /// - Commit creation fails
     pub fn add_members_from_bytes(
         &mut self,
         key_packages_bytes: &[Vec<u8>],
@@ -488,12 +441,8 @@ impl<E: Environment> MlsGroup<E> {
     /// and later used to restore the group.
     ///
     /// Returns serialized group state bytes.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if serialization fails.
     pub fn export_state(&self) -> Result<Vec<u8>, MlsError> {
-        // For now, we export the group secret as a proxy for the full state
+        // For now, we export the group secret as a proxy for the full state.
         // In a full implementation, OpenMLS would provide a way to serialize
         // the entire group state including key schedule, tree, etc.
         self.export_secret("group_state", b"", 64)
@@ -553,12 +502,6 @@ impl<E: Environment> MlsGroup<E> {
     /// This is used by the RoomManager to persist MLS state after processing
     /// commits. It includes the lightweight validation data (epoch, members,
     /// public keys) plus the serialized OpenMLS state.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if:
-    /// - Tree hash has unexpected length (MLS invariant violation)
-    /// - State serialization fails
     pub fn export_group_state(&self) -> Result<MlsGroupState, MlsError> {
         let mut members = Vec::new();
         let mut member_keys = HashMap::new();
@@ -607,10 +550,6 @@ impl<E: Environment> MlsGroup<E> {
     /// Returns (key_package_bytes, hash_ref, pending_state). The
     /// `pending_state` must be kept and passed to
     /// [`Self::join_from_welcome`] when the Welcome message is received.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if KeyPackage generation fails.
     pub fn generate_key_package(
         env: E,
         member_id: MemberId,
@@ -654,12 +593,6 @@ impl<E: Environment> MlsGroup<E> {
     /// The `pending_state` must be the one returned by
     /// [`Self::generate_key_package`] for the KeyPackage that was used to
     /// create this Welcome.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if:
-    /// - Welcome deserialization fails
-    /// - Welcome processing fails (wrong KeyPackage, crypto error, etc.)
     pub fn join_from_welcome(
         room_id: RoomId,
         member_id: MemberId,
@@ -703,10 +636,6 @@ impl<E: Environment> MlsGroup<E> {
     /// Creates a commit that adds the specified members to the group. The
     /// commit must be sent to the sequencer and will advance the epoch when
     /// accepted.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if commit creation fails.
     fn add_members(&mut self, key_packages: Vec<KeyPackage>) -> Result<Vec<MlsAction>, MlsError> {
         let target_epoch = self.epoch() + 1;
         let now = self.provider.now();
@@ -716,7 +645,6 @@ impl<E: Environment> MlsGroup<E> {
             .add_members(&self.provider, &self.signer, &key_packages)
             .map_err(|e| MlsError::Crypto(format!("Failed to add members: {}", e)))?;
 
-        // Track the pending commit for timeout detection
         self.pending_commit = Some(PendingCommit { target_epoch, sent_at: now });
 
         let mut actions = Vec::new();
@@ -756,13 +684,6 @@ impl<E: Environment> MlsGroup<E> {
     /// Creates a commit that removes the specified members from the group. The
     /// commit must be sent to the sequencer and will advance the epoch when
     /// accepted.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if:
-    /// - Any member ID is not found in the group
-    /// - Commit creation fails
-    /// - Trying to remove self (use `leave_group` instead)
     pub fn remove_members(&mut self, member_ids: &[MemberId]) -> Result<Vec<MlsAction>, MlsError> {
         if member_ids.is_empty() {
             return Err(MlsError::Crypto("No members specified for removal".to_string()));
@@ -784,7 +705,6 @@ impl<E: Environment> MlsGroup<E> {
             .remove_members(&self.provider, &self.signer, &leaf_indices)
             .map_err(|e| MlsError::Crypto(format!("Failed to remove members: {}", e)))?;
 
-        // Track the pending commit for timeout detection
         self.pending_commit = Some(PendingCommit { target_epoch, sent_at: now });
 
         let mut actions = Vec::new();
@@ -814,10 +734,6 @@ impl<E: Environment> MlsGroup<E> {
     ///
     /// Note: In MLS, a member cannot unilaterally remove themselves - another
     /// member must commit the removal.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if proposal creation fails.
     pub fn leave_group(&mut self) -> Result<Vec<MlsAction>, MlsError> {
         let mls_message_out = self
             .mls_group
@@ -846,10 +762,6 @@ impl<E: Environment> MlsGroup<E> {
     }
 
     /// Map member IDs to their corresponding leaf node indices.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if any member ID is not found in the group.
     fn member_ids_to_leaf_indices(
         &self,
         member_ids: &[MemberId],

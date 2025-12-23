@@ -69,12 +69,12 @@ impl ClientActor {
         }
     }
 
-    /// Get the underlying connection (for oracle access).
+    /// Underlying connection state (for oracle assertions).
     pub fn connection(&self) -> &Connection {
         &self.connection
     }
 
-    /// Get actor name.
+    /// Actor name used in error messages.
     pub fn name(&self) -> &str {
         &self.name
     }
@@ -124,12 +124,12 @@ impl ServerActor {
         }
     }
 
-    /// Get the underlying connection (for oracle access).
+    /// Underlying connection state (for oracle assertions).
     pub fn connection(&self) -> &Connection {
         &self.connection
     }
 
-    /// Get actor name.
+    /// Actor name used in error messages.
     pub fn name(&self) -> &str {
         &self.name
     }

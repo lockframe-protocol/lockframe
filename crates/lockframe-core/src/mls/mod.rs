@@ -1,8 +1,8 @@
 //! MLS (Messaging Layer Security) implementation.
 //!
-//! This module implements the MLS protocol (RFC 9420) for group messaging with
-//! strong security guarantees including forward secrecy and post-compromise
-//! security.
+//! Implements MLS (RFC 9420) for group messaging with forward secrecy and
+//! post-compromise security. The server enforces total ordering by sequencing
+//! frames within each epoch, and can moderate via External Commits.
 //!
 //! # Components
 //!
@@ -12,13 +12,6 @@
 //! - [`validator`]: Frame validation for server sequencing
 //! - [`error`]: MLS-specific error types
 //! - [`constants`]: Protocol constants and limits
-//!
-//! # Design
-//!
-//! 1. Sans-IO: All MLS logic returns actions, no direct I/O
-//! 2. Epoch-based ordering: Server enforces total order via epochs
-//! 3. Server authority: Server can moderate via External Commits
-//! 4. Action pattern: Methods return `Result<Vec<MlsAction>, MlsError>`
 
 pub mod constants;
 pub mod error;

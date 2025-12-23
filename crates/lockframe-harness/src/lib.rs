@@ -1,8 +1,7 @@
 //! Deterministic simulation harness for Lockframe protocol testing.
 //!
-//! This crate provides Turmoil-based implementations of the `Environment`
-//! and `Transport` traits, enabling deterministic, reproducible testing
-//! of the Lockframe protocol under various network conditions.
+//! Turmoil-based implementations of the Environment and Transport traits for
+//! deterministic, reproducible testing under various network conditions.
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]

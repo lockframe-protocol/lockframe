@@ -1,28 +1,7 @@
-//! Server driver - action-based orchestrator for the server.
+//! Server driver.
 //!
-//! The ServerDriver ties together the core components:
-//! - Connection state machines (session layer)
-//! - RoomManager (group layer with MLS validation)
-//! - ConnectionRegistry (session↔room mapping)
-//! - Storage (persistence)
-//!
-//! # Architecture
-//!
-//! ```text
-//! ServerDriver
-//!   ├─ connections: HashMap<u64, Connection>
-//!   ├─ registry: ConnectionRegistry
-//!   ├─ room_manager: RoomManager
-//!   └─ storage: S (impl Storage)
-//! ```
-//!
-//! # Event Flow
-//!
-//! 1. External runtime produces `ServerEvent`s (connection accepted, frame
-//!    received)
-//! 2. ServerDriver processes events and produces `ServerAction`s
-//! 3. Runtime-specific code executes actions (production: lib.rs, simulation:
-//!    SimServer)
+//! Ties together connection state machines, RoomManager (MLS validation +
+//! sequencing), ConnectionRegistry (session-to-room mapping), and storage.
 
 use std::{collections::HashMap, time::Instant};
 
@@ -66,13 +45,13 @@ pub enum ServerEvent {
     /// A new connection was accepted
     ConnectionAccepted {
         /// Unique connection ID assigned by the runtime
-        conn_id: u64,
+        session_id: u64,
     },
 
     /// A frame was received from a connection
     FrameReceived {
         /// Connection that sent the frame
-        conn_id: u64,
+        session_id: u64,
         /// The received frame
         frame: Frame,
     },
@@ -80,7 +59,7 @@ pub enum ServerEvent {
     /// A connection was closed (by peer or error)
     ConnectionClosed {
         /// Connection that was closed
-        conn_id: u64,
+        session_id: u64,
         /// Reason for closure
         reason: String,
     },
@@ -165,18 +144,12 @@ pub enum LogLevel {
 /// Action-based server driver.
 ///
 /// Orchestrates connection management, room operations, and frame routing.
-/// All methods return actions rather than performing I/O directly.
-///
-/// # Type Parameters
-///
-/// - `E`: Environment implementation (provides time, RNG)
-/// - `S`: Storage implementation
 pub struct ServerDriver<E, S>
 where
     E: Environment,
     S: Storage,
 {
-    /// Connection state machines (conn_id → Connection)
+    /// Connection state machines (session_id → Connection)
     connections: HashMap<u64, Connection>,
     /// Session/room registry
     registry: ConnectionRegistry,
@@ -212,12 +185,14 @@ where
     /// This is the main entry point for the server driver.
     pub fn process_event(&mut self, event: ServerEvent) -> Result<Vec<ServerAction>, ServerError> {
         match event {
-            ServerEvent::ConnectionAccepted { conn_id } => self.handle_connection_accepted(conn_id),
-            ServerEvent::FrameReceived { conn_id, frame } => {
-                self.handle_frame_received(conn_id, frame)
+            ServerEvent::ConnectionAccepted { session_id } => {
+                self.handle_connection_accepted(session_id)
             },
-            ServerEvent::ConnectionClosed { conn_id, reason } => {
-                self.handle_connection_closed(conn_id, &reason)
+            ServerEvent::FrameReceived { session_id, frame } => {
+                self.handle_frame_received(session_id, frame)
+            },
+            ServerEvent::ConnectionClosed { session_id, reason } => {
+                self.handle_connection_closed(session_id, &reason)
             },
             ServerEvent::Tick => self.handle_tick(),
         }
@@ -226,13 +201,13 @@ where
     /// Handle a new connection being accepted.
     fn handle_connection_accepted(
         &mut self,
-        conn_id: u64,
+        session_id: u64,
     ) -> Result<Vec<ServerAction>, ServerError> {
         let now = self.env.now();
 
         if self.connections.len() >= self.config.max_connections {
             return Ok(vec![ServerAction::CloseConnection {
-                session_id: conn_id,
+                session_id,
                 reason: "max connections exceeded".to_string(),
             }]);
         }
@@ -242,12 +217,12 @@ where
         let session_id = self.env.random_u64();
         conn.set_session_id(session_id);
 
-        self.connections.insert(conn_id, conn);
-        self.registry.register_session(conn_id, SessionInfo::new());
+        self.connections.insert(session_id, conn);
+        self.registry.register_session(session_id, SessionInfo::new());
 
         Ok(vec![ServerAction::Log {
             level: LogLevel::Debug,
-            message: format!("connection {} accepted, session_id={}", conn_id, session_id),
+            message: format!("connection {} accepted, session_id={}", session_id, session_id),
             timestamp: now,
         }])
     }
@@ -255,14 +230,16 @@ where
     /// Handle a frame received from a connection.
     fn handle_frame_received(
         &mut self,
-        conn_id: u64,
+        session_id: u64,
         frame: Frame,
     ) -> Result<Vec<ServerAction>, ServerError> {
         let now = self.env.now();
         let mut actions = Vec::new();
 
-        let conn =
-            self.connections.get_mut(&conn_id).ok_or(ServerError::SessionNotFound(conn_id))?;
+        let conn = self
+            .connections
+            .get_mut(&session_id)
+            .ok_or(ServerError::SessionNotFound(session_id))?;
         let opcode = frame.header.opcode_enum();
 
         match opcode {
@@ -272,28 +249,22 @@ where
             | Some(Opcode::Goodbye) => {
                 // Session-layer frames
                 let conn_actions = conn.handle_frame(&frame, now).map_err(|e| {
-                    ServerError::ConnectionFailed { session_id: conn_id, reason: e.to_string() }
+                    ServerError::ConnectionFailed { session_id, reason: e.to_string() }
                 })?;
 
                 for action in conn_actions {
                     match action {
                         ConnectionAction::SendFrame(f) => {
-                            actions.push(ServerAction::SendToSession {
-                                session_id: conn_id,
-                                frame: f,
-                            });
+                            actions.push(ServerAction::SendToSession { session_id, frame: f });
                         },
                         ConnectionAction::Close { reason } => {
-                            actions.push(ServerAction::CloseConnection {
-                                session_id: conn_id,
-                                reason,
-                            });
+                            actions.push(ServerAction::CloseConnection { session_id, reason });
                         },
                     }
                 }
 
                 if opcode == Some(Opcode::Hello) {
-                    if let Some(info) = self.registry.sessions_mut(conn_id) {
+                    if let Some(info) = self.registry.sessions_mut(session_id) {
                         info.authenticated = true;
                         info.user_id = conn.session_id();
                     }
@@ -301,7 +272,7 @@ where
             },
 
             Some(Opcode::SyncRequest) => {
-                let sync_actions = self.handle_sync_request(conn_id, &frame);
+                let sync_actions = self.handle_sync_request(session_id, &frame);
                 actions.extend(sync_actions);
             },
 
@@ -309,13 +280,13 @@ where
                 let room_id = frame.header.room_id();
                 conn.update_activity(now);
 
-                self.registry.subscribe(conn_id, room_id);
+                self.registry.subscribe(session_id, room_id);
 
                 actions.push(ServerAction::Log {
                     level: LogLevel::Debug,
                     message: format!(
                         "session {} subscribed to room {:032x} via Welcome",
-                        conn_id, room_id
+                        session_id, room_id
                     ),
                     timestamp: now,
                 });
@@ -324,7 +295,7 @@ where
                     self.room_manager.process_frame(frame, &self.env, &self.storage)?;
 
                 for room_action in room_actions {
-                    actions.extend(self.convert_room_action(room_action, conn_id));
+                    actions.extend(self.convert_room_action(room_action, session_id));
                 }
             },
 
@@ -335,7 +306,7 @@ where
                     self.room_manager.process_frame(frame, &self.env, &self.storage)?;
 
                 for room_action in room_actions {
-                    actions.extend(self.convert_room_action(room_action, conn_id));
+                    actions.extend(self.convert_room_action(room_action, session_id));
                 }
             },
         }
@@ -344,7 +315,7 @@ where
     }
 
     /// Handle a sync request from a client.
-    fn handle_sync_request(&mut self, conn_id: u64, frame: &Frame) -> Vec<ServerAction> {
+    fn handle_sync_request(&mut self, session_id: u64, frame: &Frame) -> Vec<ServerAction> {
         let room_id = frame.header.room_id();
 
         let result = (|| -> Result<Vec<ServerAction>, ServerError> {
@@ -358,25 +329,25 @@ where
 
             let room_action = self.room_manager.handle_sync_request(
                 room_id,
-                conn_id,
+                session_id,
                 from_log_index,
                 limit,
                 &self.env,
                 &self.storage,
             )?;
 
-            Ok(self.convert_room_action(room_action, conn_id))
+            Ok(self.convert_room_action(room_action, session_id))
         })();
 
         match result {
             Ok(actions) => actions,
-            Err(e) => self.make_error_response(conn_id, room_id, &e),
+            Err(e) => self.make_error_response(session_id, room_id, &e),
         }
     }
 
     fn make_error_response(
         &self,
-        conn_id: u64,
+        session_id: u64,
         room_id: u128,
         error: &ServerError,
     ) -> Vec<ServerAction> {
@@ -405,14 +376,11 @@ where
         match error.into_frame(FrameHeader::new(Opcode::Error)) {
             Ok(mut frame) => {
                 frame.header.set_room_id(room_id);
-                vec![
-                    ServerAction::SendToSession { session_id: conn_id, frame },
-                    ServerAction::Log {
-                        level: LogLevel::Warn,
-                        message: format!("sync request failed for {}: {}", conn_id, error_msg),
-                        timestamp: self.env.now(),
-                    },
-                ]
+                vec![ServerAction::SendToSession { session_id, frame }, ServerAction::Log {
+                    level: LogLevel::Warn,
+                    message: format!("sync request failed for {}: {}", session_id, error_msg),
+                    timestamp: self.env.now(),
+                }]
             },
             Err(e) => vec![ServerAction::Log {
                 level: LogLevel::Error,
@@ -425,22 +393,22 @@ where
     /// Handle a connection being closed.
     fn handle_connection_closed(
         &mut self,
-        conn_id: u64,
+        session_id: u64,
         reason: &str,
     ) -> Result<Vec<ServerAction>, ServerError> {
         let now = self.env.now();
         let mut actions = Vec::new();
 
-        if let Some(mut conn) = self.connections.remove(&conn_id) {
+        if let Some(mut conn) = self.connections.remove(&session_id) {
             conn.close();
         }
 
-        if let Some((_info, rooms)) = self.registry.unregister_session(conn_id) {
+        if let Some((_info, rooms)) = self.registry.unregister_session(session_id) {
             actions.push(ServerAction::Log {
                 level: LogLevel::Info,
                 message: format!(
                     "connection {} closed: {}, was in {} rooms",
-                    conn_id,
+                    session_id,
                     reason,
                     rooms.len()
                 ),
@@ -456,25 +424,19 @@ where
         let now = self.env.now();
         let mut actions = Vec::new();
 
-        let conn_ids: Vec<u64> = self.connections.keys().copied().collect();
+        let session_ids: Vec<u64> = self.connections.keys().copied().collect();
 
-        for conn_id in conn_ids {
-            if let Some(conn) = self.connections.get_mut(&conn_id) {
+        for session_id in session_ids {
+            if let Some(conn) = self.connections.get_mut(&session_id) {
                 let conn_actions = conn.tick(now);
 
                 for action in conn_actions {
                     match action {
                         ConnectionAction::SendFrame(f) => {
-                            actions.push(ServerAction::SendToSession {
-                                session_id: conn_id,
-                                frame: f,
-                            });
+                            actions.push(ServerAction::SendToSession { session_id, frame: f });
                         },
                         ConnectionAction::Close { reason } => {
-                            actions.push(ServerAction::CloseConnection {
-                                session_id: conn_id,
-                                reason,
-                            });
+                            actions.push(ServerAction::CloseConnection { session_id, reason });
                         },
                     }
                 }
@@ -488,11 +450,11 @@ where
     fn convert_room_action(
         &self,
         room_action: RoomAction,
-        sender_conn_id: u64,
+        sender_session_id: u64,
     ) -> Vec<ServerAction> {
         match room_action {
             RoomAction::Broadcast { room_id, frame, exclude_sender, .. } => {
-                let is_sender = if exclude_sender { Some(sender_conn_id) } else { None };
+                let is_sender = if exclude_sender { Some(sender_session_id) } else { None };
                 vec![ServerAction::BroadcastToRoom { room_id, frame, exclude_session: is_sender }]
             },
 
@@ -557,23 +519,23 @@ where
     pub fn create_room(
         &mut self,
         room_id: u128,
-        creator_conn_id: u64,
+        creator_session_id: u64,
     ) -> Result<Vec<ServerAction>, ServerError> {
         let now = self.env.now();
 
         let info = self
             .registry
-            .sessions(creator_conn_id)
-            .ok_or(ServerError::SessionNotFound(creator_conn_id))?;
+            .sessions(creator_session_id)
+            .ok_or(ServerError::SessionNotFound(creator_session_id))?;
 
-        let user_id = info.user_id.unwrap_or(creator_conn_id);
+        let user_id = info.user_id.unwrap_or(creator_session_id);
 
         self.room_manager.create_room(room_id, user_id, &self.env)?;
-        self.registry.subscribe(creator_conn_id, room_id);
+        self.registry.subscribe(creator_session_id, room_id);
 
         Ok(vec![ServerAction::Log {
             level: LogLevel::Info,
-            message: format!("room {:032x} created by session {}", room_id, creator_conn_id),
+            message: format!("room {:032x} created by session {}", room_id, creator_session_id),
             timestamp: now,
         }])
     }
@@ -588,29 +550,27 @@ where
         self.registry.unsubscribe(session_id, room_id)
     }
 
-    /// Get all sessions subscribed to a room.
+    /// All sessions subscribed to a room.
     pub fn sessions_in_room(&self, room_id: u128) -> impl Iterator<Item = u64> + '_ {
         self.registry.sessions_in_room(room_id)
     }
 
-    /// Get the number of active connections.
+    /// Number of active connections.
     pub fn connection_count(&self) -> usize {
         self.connections.len()
     }
 
-    /// Check if a room exists.
+    /// Room exists and is initialized.
     pub fn has_room(&self, room_id: u128) -> bool {
         self.room_manager.has_room(room_id)
     }
 
-    /// Get the current epoch for a room.
+    /// Current MLS epoch for a room. `None` if room doesn't exist.
     pub fn room_epoch(&self, room_id: u128) -> Option<u64> {
         self.room_manager.epoch(room_id)
     }
 
-    /// Get a reference to the storage backend.
-    ///
-    /// Used by the executor to persist frames and MLS state.
+    /// Storage backend for frame/state persistence.
     pub fn storage(&self) -> &S {
         &self.storage
     }
@@ -661,7 +621,8 @@ mod tests {
         let storage = MemoryStorage::new();
         let mut server = ServerDriver::new(env, storage, ServerConfig::default());
 
-        let actions = server.process_event(ServerEvent::ConnectionAccepted { conn_id: 1 }).unwrap();
+        let actions =
+            server.process_event(ServerEvent::ConnectionAccepted { session_id: 1 }).unwrap();
 
         assert_eq!(server.connection_count(), 1);
         assert!(matches!(actions[0], ServerAction::Log { level: LogLevel::Debug, .. }));
@@ -675,11 +636,12 @@ mod tests {
         let mut server = ServerDriver::new(env, storage, config);
 
         // Accept two connections
-        server.process_event(ServerEvent::ConnectionAccepted { conn_id: 1 }).unwrap();
-        server.process_event(ServerEvent::ConnectionAccepted { conn_id: 2 }).unwrap();
+        server.process_event(ServerEvent::ConnectionAccepted { session_id: 1 }).unwrap();
+        server.process_event(ServerEvent::ConnectionAccepted { session_id: 2 }).unwrap();
 
         // Third should be rejected
-        let actions = server.process_event(ServerEvent::ConnectionAccepted { conn_id: 3 }).unwrap();
+        let actions =
+            server.process_event(ServerEvent::ConnectionAccepted { session_id: 3 }).unwrap();
 
         assert_eq!(server.connection_count(), 2);
         assert!(matches!(actions[0], ServerAction::CloseConnection { .. }));
@@ -691,12 +653,12 @@ mod tests {
         let storage = MemoryStorage::new();
         let mut server = ServerDriver::new(env, storage, ServerConfig::default());
 
-        server.process_event(ServerEvent::ConnectionAccepted { conn_id: 1 }).unwrap();
+        server.process_event(ServerEvent::ConnectionAccepted { session_id: 1 }).unwrap();
         assert_eq!(server.connection_count(), 1);
 
         server
             .process_event(ServerEvent::ConnectionClosed {
-                conn_id: 1,
+                session_id: 1,
                 reason: "client disconnect".to_string(),
             })
             .unwrap();
@@ -711,7 +673,7 @@ mod tests {
         let mut server = ServerDriver::new(env, storage, ServerConfig::default());
 
         // Accept connection first
-        server.process_event(ServerEvent::ConnectionAccepted { conn_id: 1 }).unwrap();
+        server.process_event(ServerEvent::ConnectionAccepted { session_id: 1 }).unwrap();
 
         // Create room
         let room_id = 0x1234_5678_90ab_cdef_1234_5678_90ab_cdef;
@@ -746,8 +708,8 @@ mod tests {
         let room_id = 0x1234_5678_90ab_cdef_1234_5678_90ab_cdef;
 
         // Accept connections
-        server.process_event(ServerEvent::ConnectionAccepted { conn_id: 1 }).unwrap();
-        server.process_event(ServerEvent::ConnectionAccepted { conn_id: 2 }).unwrap();
+        server.process_event(ServerEvent::ConnectionAccepted { session_id: 1 }).unwrap();
+        server.process_event(ServerEvent::ConnectionAccepted { session_id: 2 }).unwrap();
 
         // Create room (subscribes conn 1)
         server.create_room(room_id, 1).unwrap();
@@ -777,8 +739,8 @@ mod tests {
         let room_id = 0x1234_5678_90ab_cdef_1234_5678_90ab_cdef;
 
         // Accept two connections
-        server.process_event(ServerEvent::ConnectionAccepted { conn_id: 1 }).unwrap();
-        server.process_event(ServerEvent::ConnectionAccepted { conn_id: 2 }).unwrap();
+        server.process_event(ServerEvent::ConnectionAccepted { session_id: 1 }).unwrap();
+        server.process_event(ServerEvent::ConnectionAccepted { session_id: 2 }).unwrap();
 
         // Conn 1 creates the room
         server.create_room(room_id, 1).unwrap();
@@ -797,8 +759,8 @@ mod tests {
 
         // Process the Welcome - it will fail MLS validation but subscription should
         // happen
-        let _ =
-            server.process_event(ServerEvent::FrameReceived { conn_id: 2, frame: welcome_frame });
+        let _ = server
+            .process_event(ServerEvent::FrameReceived { session_id: 2, frame: welcome_frame });
 
         // Verify conn 2 is now subscribed (even if MLS processing failed)
         let sessions: Vec<_> = server.sessions_in_room(room_id).collect();

@@ -1,8 +1,8 @@
 //! MLS frame validation for server sequencing
 //!
-//! This module provides minimal validation logic needed by the Sequencer.
-//! It validates frames against current MLS state (epoch, membership, and
-//! signature) without performing full MLS operations.
+//! Minimal validation logic needed by the Sequencer. Validates frames against
+//! current MLS state (epoch, membership, and signature) without performing full
+//! MLS operations.
 
 use ed25519_dalek::{Signature, Verifier};
 use lockframe_proto::Frame;
@@ -37,9 +37,6 @@ pub struct MlsValidator;
 impl MlsValidator {
     /// Validate a frame against current MLS group state
     ///
-    /// # Errors
-    ///
-    /// Returns `MlsError` if frame validation encounters an internal error.
     /// Note: Validation failures return `Ok(ValidationResult::Reject)`, not
     /// errors.
     pub fn validate_frame(
@@ -67,7 +64,6 @@ impl MlsValidator {
 
         debug_assert!(group_state.is_member(sender_id));
 
-        // Delegate to signature-only validation
         Self::validate_signature(frame, group_state)
     }
 
@@ -75,10 +71,6 @@ impl MlsValidator {
     ///
     /// Use this when epoch and membership have already been validated
     /// (e.g., after sequencing when the frame has been modified).
-    ///
-    /// # Errors
-    ///
-    /// Returns `MlsError` if signature validation encounters an internal error.
     pub fn validate_signature(
         frame: &Frame,
         group_state: &MlsGroupState,
@@ -123,9 +115,6 @@ impl MlsValidator {
     /// This is used for the initial setup of a room before MLS is initialized.
     /// Only basic sanity checks are performed.
     ///
-    /// # Errors
-    ///
-    /// Returns `MlsError` if frame validation encounters an internal error.
     /// Note: Validation failures return `Ok(ValidationResult::Reject)`, not
     /// errors.
     pub fn validate_frame_no_state(frame: &Frame) -> Result<ValidationResult, MlsError> {

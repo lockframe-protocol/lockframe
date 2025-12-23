@@ -1,11 +1,10 @@
 //! Error types for the Lockframe protocol core.
 //!
-//! This module provides strongly-typed errors for different layers:
-//! - Connection errors (handshake, timeout, state transitions)
-//! - Transport errors (network failures)
+//! Strongly-typed errors for different layers: connection errors (handshake,
+//! timeout, state transitions) and transport errors (network failures).
 //!
-//! We avoid using `std::io::Error` for protocol logic to maintain type safety
-//! and enable proper error handling and recovery.
+//! We avoid using std::io::Error for protocol logic to maintain type safety and
+//! enable proper error handling and recovery.
 
 use std::{io, time::Duration};
 

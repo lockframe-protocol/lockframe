@@ -1,7 +1,23 @@
 //! Quinn-based QUIC transport implementation.
 //!
-//! This module provides `QuinnTransport`, the production QUIC transport using
-//! the Quinn library.
+//! Production QUIC transport using the Quinn library. Provides encrypted,
+//! multiplexed streams over UDP with TLS 1.3. Supports both production TLS
+//! certificates (via PEM files) and self-signed certificates for testing.
+//!
+//! # Capabilities
+//!
+//! - UDP-based transport with packet loss recovery
+//! - TLS 1.3 encryption and authentication
+//! - Stream multiplexing (multiple logical streams over one connection)
+//! - Connection migration support (IP address changes)
+//!
+//! # Security
+//!
+//! The transport enforces TLS 1.3 via the `rustls` crate. ALPN
+//! (Application-Layer Protocol Negotiation) is set to "lockframe" to ensure
+//! protocol compatibility. Self-signed certificates are only suitable for local
+//! testing - production deployments MUST use proper TLS certificates from a
+//! trusted CA.
 
 use std::{net::SocketAddr, sync::Arc};
 
@@ -11,7 +27,15 @@ use crate::error::ServerError;
 
 /// QUIC transport using Quinn.
 ///
-/// Provides a QUIC endpoint that can accept incoming connections.
+/// Provides a QUIC endpoint that can accept incoming connections. The endpoint
+/// is configured with TLS 1.3 and ALPN protocol "lockframe".
+///
+/// # Security
+///
+/// TLS certificates must be valid and trusted in production. Self-signed
+/// certificates (generated via `bind(addr, None, None)`) are only for testing
+/// and will log a warning. Production deployments MUST use certificates from a
+/// trusted CA to prevent MITM attacks.
 pub struct QuinnTransport {
     /// Quinn endpoint
     endpoint: Endpoint,
@@ -22,12 +46,6 @@ impl QuinnTransport {
     ///
     /// If `cert_path` and `key_path` are provided, they will be used for TLS.
     /// Otherwise, a self-signed certificate will be generated for testing.
-    ///
-    /// # Errors
-    ///
-    /// Returns error if:
-    /// - Binding to the address fails
-    /// - TLS certificate loading fails
     pub async fn bind(
         address: &str,
         cert_path: Option<String>,
@@ -67,7 +85,7 @@ impl QuinnTransport {
         Ok(QuinnConnection { connection: conn })
     }
 
-    /// Get the local address the transport is bound to.
+    /// Local address the transport is bound to.
     pub fn local_addr(&self) -> Result<SocketAddr, ServerError> {
         self.endpoint
             .local_addr()
@@ -76,6 +94,22 @@ impl QuinnTransport {
 }
 
 /// A QUIC connection wrapper.
+///
+/// Wraps Quinn's connection type and provides stream operations. Supports both
+/// bidirectional streams (accept_bi for server-initiated) and unidirectional
+/// streams (open_uni for server-to-client sends).
+///
+/// # Cloning
+///
+/// Clones are cheap and share the same underlying QUIC connection and can be
+/// used concurrently. This enables passing the connection to multiple tasks for
+/// parallel stream handling.
+///
+/// # Security
+///
+/// The connection is TLS-encrypted. All data sent over streams is authenticated
+/// and encrypted. The remote peer's certificate is validated during the QUIC
+/// handshake before this connection object is created.
 #[derive(Clone)]
 pub struct QuinnConnection {
     connection: quinn::Connection,
@@ -98,7 +132,7 @@ impl QuinnConnection {
             .map_err(|e| ServerError::Transport(format!("open_uni failed: {}", e)))
     }
 
-    /// Get the remote address of the connection.
+    /// Remote peer address.
     pub fn remote_addr(&self) -> SocketAddr {
         self.connection.remote_address()
     }

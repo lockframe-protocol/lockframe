@@ -11,34 +11,9 @@ use rand_chacha::ChaCha20Rng;
 
 /// Simulation environment using Turmoil's virtual time and seeded RNG.
 ///
-/// This implementation provides:
-///
-/// - **Virtual Time**: `now()` returns Turmoil's simulated time, which can be
-///   advanced instantly via `turmoil::sleep()`.
-///
-/// - **Seeded RNG**: `random_bytes()` uses ChaCha20Rng seeded with a fixed
-///   value, ensuring reproducible test runs.
-///
-/// # Determinism
-///
-/// The RNG is seeded with a fixed value (0) by default. This ensures that:
-/// - Test runs are reproducible
-/// - Debugging is easier (same sequence every time)
-/// - CI/CD catches regressions reliably
-///
-/// For testing different scenarios, create SimEnv with different seeds:
-/// ```ignore
-/// let env = SimEnv::with_seed(12345);
-/// ```
-///
-/// # Usage
-///
-/// `SimEnv` must be used inside a Turmoil simulation context (created by
-/// `turmoil::Builder`). Using it outside will panic for time operations.
-///
-/// # Panics
-///
-/// - `now()` panics if called outside a Turmoil simulation
+/// now() returns Turmoil's simulated time, which can be advanced instantly via
+/// turmoil::sleep(). random_bytes() uses ChaCha20Rng seeded with a fixed value
+/// (0 by default), ensuring reproducible test runs and easier debugging.
 #[derive(Clone)]
 pub struct SimEnv {
     /// Seeded RNG for deterministic random bytes

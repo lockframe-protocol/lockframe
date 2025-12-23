@@ -7,22 +7,15 @@ use serde::{Deserialize, Serialize};
 
 /// Encrypted application message
 ///
-/// This is the primary message type for user-to-user communication.
-/// The message is encrypted with sender keys derived from the MLS epoch.
+/// Primary message type for user-to-user communication. Messages are encrypted
+/// with XChaCha20-Poly1305 using sender keys derived from the MLS epoch secret.
+/// The nonce is deterministically derived from (epoch, sender_index,
+/// generation) plus a random suffix to prevent reuse.
 ///
-/// # Cryptography
-///
-/// - **Cipher**: XChaCha20-Poly1305 (24-byte nonce, 16-byte tag)
-/// - **Key Derivation**: Sender keys are derived from the MLS epoch secret
-/// - **Nonce**: Deterministically derived from `(epoch, sender_index,
-///   generation)` plus random suffix to prevent reuse
-///
-/// # Sender Key Metadata
-///
-/// The `epoch`, `sender_index`, and `generation` fields are required for
-/// the receiver to derive the correct decryption key from their sender key
-/// ratchet state. These duplicate some header fields but are included in
-/// the CBOR payload for authenticated binding.
+/// The epoch, sender_index, and generation fields let the receiver derive the
+/// correct decryption key from their sender key ratchet state. These duplicate
+/// some header fields but are included in the CBOR payload for authenticated
+/// binding.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EncryptedMessage {
     /// The MLS epoch this message was encrypted under.
@@ -61,11 +54,11 @@ pub struct EncryptedMessage {
 ///
 /// # Security
 ///
-/// - **Perfect Forward Secrecy**: Each message uses an ephemeral X25519
-///   keypair. Compromise of long-term keys does not compromise past messages.
+/// - Perfect Forward Secrecy: Each message uses an ephemeral X25519 keypair.
+///   Compromise of long-term keys does not compromise past messages.
 ///
-/// - **Selective Recipients**: Only critical recipients receive push keys.
-///   Regular group messages rely on the MLS ratchet tree instead.
+/// - Selective Recipients: Only critical recipients receive push keys. Regular
+///   group messages rely on the MLS ratchet tree instead.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PushKey {
     /// Recipient device ID

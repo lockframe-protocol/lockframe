@@ -10,9 +10,17 @@ use serde::{Deserialize, Serialize};
 /// The first message sent by a client to establish a session. The server
 /// responds with [`HelloReply`] containing a session ID.
 ///
+/// # Protocol Flow
+///
+/// 1. Client connects to server (QUIC handshake completes)
+/// 2. Client sends `Hello` with protocol version and capabilities
+/// 3. Server validates version compatibility
+/// 4. Server responds with `HelloReply` containing assigned session_id
+/// 5. Client can now send MLS operations and application messages
+///
 /// # Security
 ///
-/// - **Debug Redaction**: The `Debug` impl redacts `auth_token` to prevent
+/// - Debug Redaction: The `Debug` impl redacts `auth_token` to prevent
 ///   accidental logging of credentials. Always use custom `Debug`
 ///   implementations for types containing secrets.
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -44,10 +52,16 @@ impl std::fmt::Debug for Hello {
 /// Sent by the server after receiving [`Hello`]. Contains the assigned session
 /// ID and optionally an authentication challenge.
 ///
+/// # Protocol Flow
+///
+/// Sent as immediate response to client's `Hello`. The session_id in this
+/// message must be used by the client in all subsequent frame headers to
+/// identify its session.
+///
 /// # Security
 ///
-/// - **Debug Redaction**: The `Debug` impl redacts `challenge` to prevent
-///   logging cryptographic nonces or auth challenges.
+/// - Debug Redaction: The `Debug` impl redacts `challenge` to prevent logging
+///   cryptographic nonces or auth challenges.
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HelloReply {
     /// Assigned session ID
@@ -88,12 +102,9 @@ pub struct Goodbye {
 /// Sent by a client when it detects it's behind the server's epoch
 /// (e.g., after a commit timeout or epoch mismatch error).
 ///
-/// # Protocol Flow
-///
-/// 1. Client detects epoch mismatch (e.g., server is at epoch 5, client at 3)
-/// 2. Client sends `SyncRequest { from_log_index: 42 }` for the room
-/// 3. Server responds with `SyncResponse` containing frames from log_index 42+
-/// 4. Client processes frames in order to catch up
+/// Client detects epoch mismatch, sends SyncRequest with from_log_index,
+/// server responds with SyncResponse containing frames, and client processes
+/// frames in order to catch up.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SyncRequest {
     /// Start replaying frames from this log index (inclusive).

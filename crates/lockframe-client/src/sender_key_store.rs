@@ -45,12 +45,12 @@ impl SenderKeyStore {
         Self { epoch, ratchets }
     }
 
-    /// Get the current epoch.
+    /// Current MLS epoch for this room.
     pub fn epoch(&self) -> u64 {
         self.epoch
     }
 
-    /// Get the number of members in this store.
+    /// Number of senders with initialized ratchets.
     pub fn member_count(&self) -> usize {
         self.ratchets.len()
     }
@@ -63,11 +63,6 @@ impl SenderKeyStore {
     /// Encrypt a message as a specific sender.
     ///
     /// Advances the sender's ratchet and returns the encrypted message.
-    ///
-    /// # Errors
-    ///
-    /// - `UnknownSender`: `sender_index` not in this store
-    /// - `GenerationOverflow`: ratchet exhausted (extremely unlikely)
     pub fn encrypt(
         &mut self,
         sender_index: u32,
@@ -89,10 +84,12 @@ impl SenderKeyStore {
     ///
     /// # Errors
     ///
-    /// - `EpochMismatch`: message is for a different epoch
-    /// - `UnknownSender`: sender not in this store
-    /// - `RatchetTooFarBehind`: message generation too far ahead
-    /// - `DecryptionFailed`: authentication failed (tampering or wrong key)
+    /// - `SenderKeyError::EpochMismatch` if message is for a different epoch
+    /// - `SenderKeyError::UnknownSender` if sender not in this store
+    /// - `SenderKeyError::RatchetTooFarBehind` if message generation too far
+    ///   ahead
+    /// - `SenderKeyError::DecryptionFailed` if authentication failed (tampering
+    ///   or wrong key)
     pub fn decrypt(&mut self, encrypted: &EncryptedMessage) -> Result<Vec<u8>, SenderKeyError> {
         if encrypted.epoch != self.epoch {
             return Err(SenderKeyError::EpochMismatch {
@@ -110,7 +107,8 @@ impl SenderKeyStore {
         decrypt_message(encrypted, &message_key)
     }
 
-    /// Get the current generation for a sender's ratchet.
+    /// Current generation for a sender's ratchet. `None` if sender not
+    /// initialized.
     ///
     /// Returns `None` if the sender is not in this store.
     pub fn generation(&self, sender_index: u32) -> Option<u32> {

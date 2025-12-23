@@ -1,7 +1,16 @@
 //! Production Environment implementation using system time and RNG.
 //!
-//! This module provides `SystemEnv`, the production implementation of the
-//! `Environment` trait that uses real system time and cryptographic RNG.
+//! SystemEnv is the production implementation of the Environment trait using
+//! real system time and cryptographic RNG.
+//!
+//! # Capabilities
+//!
+//! - Real system time (std::time::Instant) that advances naturally
+//! - OS cryptographic RNG (getrandom). Truly random, not reproducible
+//! - Tokio async sleep for actual wall-clock delays
+//!
+//! This means production behavior is non-deterministic, but provides real-world
+//! timing and security-grade randomness.
 
 use std::time::Duration;
 
@@ -9,16 +18,26 @@ use lockframe_core::env::Environment;
 
 /// Production environment using system time and cryptographic RNG.
 ///
-/// This implementation:
-/// - Uses `std::time::Instant::now()` for time
-/// - Uses `tokio::time::sleep()` for async sleeping
-/// - Uses `getrandom` for cryptographic randomness
+/// Uses std::time::Instant::now() for time, tokio::time::sleep() for async
+/// sleeping, and getrandom for cryptographic randomness.
 ///
 /// # Security
 ///
-/// The RNG uses `getrandom` which provides OS-level cryptographic randomness.
-/// This is suitable for generating session IDs, nonces, and other security-
-/// critical values.
+/// The RNG uses getrandom which provides OS-level cryptographic randomness
+/// (e.g., /dev/urandom on Linux, BCryptGenRandom on Windows). Suitable for
+/// generating session IDs, nonces, ephemeral keys, and other security-critical
+/// values.
+///
+/// If the OS RNG fails (extremely rare), random_bytes() falls back to zeros and
+/// logs an error. In production, this fallback should be treated as a critical
+/// error - consider panicking or shutting down gracefully instead.
+///
+/// # Panics
+///
+/// Currently does not panic on RNG failure (logs error and fills with zeros).
+/// This is a deliberate choice to avoid crashes, but production deployments
+/// should monitor for "getrandom failed" log messages and treat them as
+/// critical incidents.
 #[derive(Clone, Default)]
 pub struct SystemEnv;
 

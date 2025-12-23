@@ -1,37 +1,18 @@
-//! CBOR-encoded frame payloads.
+//! CBOR-encoded protocol messages.
 //!
-//! Each opcode has a corresponding payload type. The `Payload` enum provides
-//! type-safe payload handling with automatic CBOR serialization.
+//! Frame headers are raw binary for performance, but payloads use CBOR for type
+//! safety and forward compatibility. The `Payload` enum covers all message
+//! types: session management (Hello, Ping, etc.), MLS operations (Welcome,
+//! Commit), and application messages.
 //!
-//! # Design Rationale
+//! We chose CBOR over alternatives because it's self-describing (field names
+//! embedded), compact, and doesn't need code generation. The sequencer never
+//! deserializes payloads - only clients do.
 //!
-//! ## Why CBOR Instead of Raw Binary?
+//! # Invariants
 //!
-//! - **Forward Compatibility**: CBOR allows adding optional fields without
-//!   breaking old clients. Binary formats require version negotiation for every
-//!   schema change.
-//!
-//! - **Type Safety**: CBOR preserves type information (distinguishes integers
-//!   from strings). This prevents interpretation errors and simplifies
-//!   debugging.
-//!
-//! - **Performance Trade-off**: While CBOR is slower than raw binary, the
-//!   sequencer never deserializes payloads. Only clients parse CBOR, and
-//!   client-side CPU is not a bottleneck.
-//!
-//! ## Security Properties
-//!
-//! - **Bounded Deserialization**: All payloads are validated against the 16 MB
-//!   size limit before CBOR parsing begins. This prevents resource exhaustion
-//!   attacks.
-//!
-//! - **No Eval/Code Execution**: CBOR is a pure data format with no code
-//!   execution features. Unlike JSON with prototype pollution or YAML with code
-//!   execution, CBOR cannot run code.
-//!
-//! - **Explicit Schema**: Each payload type has an explicit Rust struct
-//!   definition. There is no "generic map" parsing that could accept unexpected
-//!   fields.
+//! Each payload variant maps to exactly one opcode (enforced by match
+//! exhaustiveness). Round-trip encoding must produce identical values.
 
 pub mod app;
 pub mod mls;
@@ -53,23 +34,23 @@ use crate::{
 ///
 /// # Invariants
 ///
-/// - **Opcode Uniqueness**: Each payload variant corresponds to exactly one
+/// - Opcode Uniqueness: Each payload variant corresponds to exactly one
 ///   `Opcode`. The `opcode()` method returns a unique opcode for each variant.
 ///
-/// - **Serialization Consistency**: Encoding a `Payload` and then decoding it
-///   with the same opcode MUST produce an equivalent value. This is verified by
+/// - Serialization Consistency: Encoding a `Payload` and then decoding it with
+///   the same opcode MUST produce an equivalent value. This is verified by
 ///   round-trip tests.
 ///
 /// # Security
 ///
-/// - **No Variant Tag**: Unlike typical Rust enum serialization, we do NOT
+/// - No Variant Tag: Unlike typical Rust enum serialization, we do NOT
 ///   serialize the variant discriminator. The frame header's `opcode` field
 ///   already identifies the payload type. This prevents attackers from sending
 ///   mismatched opcode/payload pairs.
 ///
-/// - **Exhaustive Matching**: All methods use exhaustive `match` statements.
-///   Adding a new variant will cause compile errors in `encode()`, `decode()`,
-///   and `opcode()`, ensuring no variant is accidentally left unhandled.
+/// - Exhaustive Matching: All methods use exhaustive `match` statements. Adding
+///   a new variant will cause compile errors in `encode()`, `decode()`, and
+///   `opcode()`, ensuring no variant is accidentally left unhandled.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Payload {
     // Session Management
@@ -181,7 +162,7 @@ impl ErrorPayload {
 }
 
 impl Payload {
-    /// Get the opcode for this payload variant
+    /// Opcode corresponding to this payload type.
     #[must_use]
     pub const fn opcode(&self) -> Opcode {
         match self {
@@ -211,20 +192,20 @@ impl Payload {
     /// Serializes only the inner struct, NOT the variant tag.
     /// The frame header's opcode already identifies the payload type.
     ///
-    /// # Errors
-    ///
-    /// Returns [`ProtocolError::CborEncode`] if serialization fails.
-    ///
     /// # Security
     ///
-    /// - **No Size Limit Enforcement**: This function does NOT check if the
-    ///   encoded size exceeds [`FrameHeader::MAX_PAYLOAD_SIZE`]. Size
-    ///   validation happens later in [`Frame::encode`]. This separation allows
-    ///   encoding for testing or inspection without artificial limits.
+    /// - No Size Limit Enforcement: This function does NOT check if the encoded
+    ///   size exceeds [`FrameHeader::MAX_PAYLOAD_SIZE`]. Size validation
+    ///   happens later in [`Frame::encode`]. This separation allows encoding
+    ///   for testing or inspection without artificial limits.
     ///
-    /// - **Deterministic Encoding**: CBOR uses deterministic (canonical)
-    ///   encoding. The same payload always produces the same byte sequence,
-    ///   which is critical for signature verification.
+    /// - Deterministic Encoding: CBOR uses deterministic (canonical) encoding.
+    ///   The same payload always produces the same byte sequence, which is
+    ///   critical for signature verification.
+    ///
+    /// # Errors
+    ///
+    /// - `ProtocolError::CborEncode` if serialization fails
     pub fn encode(&self, dst: &mut impl BufMut) -> Result<()> {
         let mut writer = dst.writer();
 
@@ -252,23 +233,24 @@ impl Payload {
 
     /// Decode payload from bytes based on opcode
     ///
-    /// # Errors
-    ///
-    /// Returns error if:
-    /// - `bytes.len() > MAX_PAYLOAD_SIZE` (16 MB)
-    /// - CBOR deserialization fails
-    /// - Opcode is not recognized
     ///
     /// # Security
     ///
-    /// - **Size Validation First**: The size check happens BEFORE CBOR parsing
+    /// - Size Validation First: The size check happens BEFORE CBOR parsing
     ///   begins. This prevents the CBOR parser from processing maliciously
     ///   large inputs that could exhaust memory or CPU.
     ///
-    /// - **Fail on Unknown Opcodes**: Unknown opcodes are rejected with an
-    ///   error rather than being silently ignored. This prevents version
-    ///   confusion attacks where an old client misinterprets frames from a
-    ///   newer protocol version.
+    /// - Fail on Unknown Opcodes: Unknown opcodes are rejected with an error
+    ///   rather than being silently ignored. This prevents version confusion
+    ///   attacks where an old client misinterprets frames from a newer protocol
+    ///   version.
+    ///
+    /// # Errors
+    ///
+    /// - `ProtocolError::PayloadTooLarge` if bytes exceed MAX_PAYLOAD_SIZE (16
+    ///   MB)
+    /// - `ProtocolError::CborDecode` if CBOR deserialization fails
+    /// - `ProtocolError::CborDecode` if opcode is not recognized
     pub fn decode(opcode: Opcode, bytes: &[u8]) -> Result<Self> {
         if bytes.len() > FrameHeader::MAX_PAYLOAD_SIZE as usize {
             return Err(ProtocolError::PayloadTooLarge {
@@ -364,7 +346,7 @@ impl Payload {
     ///
     /// # Errors
     ///
-    /// Returns `ProtocolError::CborEncode` if serialization fails
+    /// - `ProtocolError::CborEncode` if serialization fails
     pub fn into_frame(self, mut header: FrameHeader) -> Result<Frame> {
         let mut buf = Vec::new();
         self.encode(&mut buf)?;
@@ -380,10 +362,9 @@ impl Payload {
     ///
     /// # Errors
     ///
-    /// Returns error if:
-    /// - Opcode is invalid or unsupported
-    /// - CBOR deserialization fails
-    /// - Payload exceeds maximum size
+    /// - `ProtocolError::CborDecode` if opcode is invalid or unsupported
+    /// - `ProtocolError::CborDecode` if CBOR deserialization fails
+    /// - `ProtocolError::PayloadTooLarge` if payload exceeds maximum size
     pub fn from_frame(frame: Frame) -> Result<Self> {
         let opcode = frame.header.opcode_enum().ok_or_else(|| {
             ProtocolError::CborDecode(format!("Invalid opcode: {:#06x}", frame.header.opcode()))

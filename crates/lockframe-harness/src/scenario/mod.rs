@@ -1,8 +1,8 @@
 //! Scenario testing framework for deterministic simulation tests.
 //!
-//! This module provides a declarative API for writing scenario-based tests
-//! that follow the Oracle Pattern. Scenarios automatically handle network I/O,
-//! action execution, and enforce oracle verification.
+//! Declarative API for writing scenario-based tests that follow the Oracle
+//! Pattern. Scenarios automatically handle network I/O, action execution, and
+//! enforce oracle verification.
 
 mod actor;
 mod builder;

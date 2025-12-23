@@ -1,8 +1,8 @@
 //! Chaotic storage wrapper for fault injection testing
 //!
-//! This module provides a storage wrapper that randomly fails operations to
-//! test error handling and recovery. It's used for chaos testing to ensure the
-//! system handles storage failures gracefully.
+//! Storage wrapper that randomly fails operations to test error handling and
+//! recovery. Used for chaos testing to ensure the system handles storage
+//! failures gracefully.
 
 use std::sync::{Arc, Mutex};
 
@@ -13,13 +13,10 @@ use super::{Storage, StorageError};
 
 /// Chaotic storage wrapper that randomly injects failures
 ///
-/// This wrapper delegates to an underlying storage implementation but randomly
-/// fails operations based on a configured failure rate. It's used for chaos
-/// testing to verify error handling.
-///
-/// # Thread Safety
-///
-/// Uses `Arc<Mutex<>>` for the RNG state, making it Clone and thread-safe.
+/// Delegates to an underlying storage implementation but randomly fails
+/// operations based on a configured failure rate. Used for chaos testing to
+/// verify error handling. Uses Arc<Mutex<>> for the RNG state, making it Clone
+/// and thread-safe.
 #[derive(Clone)]
 pub struct ChaoticStorage<S: Storage> {
     inner: S,
@@ -93,14 +90,14 @@ impl<S: Storage> ChaoticStorage<S> {
         }
     }
 
-    /// Get the underlying storage (useful for checking invariants after chaos)
+    /// Underlying storage (for checking invariants after chaos).
     pub fn inner(&self) -> &S {
         &self.inner
     }
 
-    /// Get total number of storage operations attempted
+    /// Total number of storage operations attempted.
     ///
-    /// This is used for performance oracles to verify O(n) complexity.
+    /// Used for performance oracles to verify O(n) complexity.
     /// Each call to any storage method increments this counter.
     pub fn operation_count(&self) -> usize {
         *self.operation_count.lock().expect("operation_count mutex poisoned")
