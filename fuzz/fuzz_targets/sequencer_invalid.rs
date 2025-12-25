@@ -16,8 +16,8 @@
 
 use bytes::Bytes;
 use libfuzzer_sys::fuzz_target;
-use lockframe_core::{mls::MlsValidator, sequencer::Sequencer, storage::MemoryStorage};
 use lockframe_proto::{Frame, FrameHeader, Opcode};
+use lockframe_server::{sequencer::Sequencer, storage::MemoryStorage};
 
 fuzz_target!(|data: &[u8]| {
     if data.len() < 128 {
@@ -25,7 +25,6 @@ fuzz_target!(|data: &[u8]| {
     }
 
     let storage = MemoryStorage::new();
-    let validator = MlsValidator;
     let mut sequencer = Sequencer::new();
 
     // Try to create a frame from the fuzzed data
@@ -34,7 +33,7 @@ fuzz_target!(|data: &[u8]| {
     if let Ok(frame) = result {
         // Attempt to process the frame through the sequencer
         // This should never panic, even with completely invalid frames
-        let _ = sequencer.process_frame(frame, &storage, &validator);
+        let _ = sequencer.process_frame(frame, &storage);
     }
 
     // Also test with specific malicious patterns
@@ -57,6 +56,6 @@ fuzz_target!(|data: &[u8]| {
         let payload_data = if data.len() > 24 { &data[24..] } else { &[] };
         let frame = Frame::new(header, Bytes::copy_from_slice(payload_data));
 
-        let _ = sequencer.process_frame(frame, &storage, &validator);
+        let _ = sequencer.process_frame(frame, &storage);
     }
 });

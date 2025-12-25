@@ -25,7 +25,7 @@ mod error;
 mod executor;
 mod registry;
 mod room_manager;
-mod sequencer;
+pub mod sequencer;
 mod server_error;
 pub mod storage;
 mod system_env;
