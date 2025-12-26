@@ -74,12 +74,18 @@ impl ModelWorld {
             Operation::LeaveRoom { client_id, room_id } => {
                 self.apply_leave_room(*client_id, *room_id)
             },
+            Operation::AddMember { inviter_id, invitee_id, room_id } => {
+                self.apply_add_member(*inviter_id, *invitee_id, *room_id)
+            },
+            Operation::RemoveMember { remover_id, target_id, room_id } => {
+                self.apply_remove_member(*remover_id, *target_id, *room_id)
+            },
             Operation::AdvanceTime { .. } => {
-                // Model doesn't track time - instant delivery
+                // Model doesn't track time
                 OperationResult::Ok
             },
             Operation::DeliverPending => {
-                // Model has instant delivery - no-op
+                self.apply_deliver_pending();
                 OperationResult::Ok
             },
         }
@@ -145,6 +151,9 @@ impl ModelWorld {
     }
 
     /// Apply send message operation.
+    ///
+    /// Message is queued for pending delivery. Call `apply_deliver_pending`
+    /// to actually deliver messages to clients.
     fn apply_send_message(
         &mut self,
         client_id: ClientId,
@@ -165,20 +174,25 @@ impl ModelWorld {
         }
     }
 
-        // Deliver to all members (including sender)
-        if let Some(members) = self.server.members(room_id) {
-            let member_ids: Vec<_> = members.collect();
-            for member_id in member_ids {
-                if let Some(client) = self.clients.get_mut(member_id as usize) {
-                    client.receive_message(room_id, message.clone());
+    /// Deliver all pending messages to their recipients.
+    fn apply_deliver_pending(&mut self) {
+        let pending = self.server.take_pending();
+
+        for pending_msg in pending {
+            for recipient_id in pending_msg.recipients {
+                if let Some(client) = self.clients.get_mut(recipient_id as usize) {
+                    // Only deliver if still a member (may have left between send and delivery)
+                    if client.is_member(pending_msg.room_id) {
+                        client.receive_message(pending_msg.room_id, pending_msg.message.clone());
+                    }
                 }
             }
         }
-
-        OperationResult::Ok
     }
 
     /// Apply leave room operation.
+    ///
+    /// Self-initiated departure. Advances epoch.
     fn apply_leave_room(&mut self, client_id: ClientId, room_id: ModelRoomId) -> OperationResult {
         let client = match self.clients.get_mut(client_id as usize) {
             Some(c) => c,

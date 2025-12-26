@@ -58,8 +58,78 @@ impl RealWorld {
             Operation::LeaveRoom { client_id, room_id } => {
                 self.apply_leave_room(*client_id, *room_id)
             },
+            Operation::AddMember { inviter_id, invitee_id, room_id } => {
+                self.apply_add_member(*inviter_id, *invitee_id, *room_id)
+            },
+            Operation::RemoveMember { remover_id, target_id, room_id } => {
+                self.apply_remove_member(*remover_id, *target_id, *room_id)
+            },
             Operation::AdvanceTime { .. } | Operation::DeliverPending => OperationResult::Ok,
         }
+    }
+
+    fn apply_add_member(
+        &mut self,
+        inviter_id: ClientId,
+        invitee_id: ClientId,
+        room_id: ModelRoomId,
+    ) -> OperationResult {
+        // Validate both clients exist
+        if inviter_id as usize >= self.clients.len() {
+            return OperationResult::Error(OperationError::InvalidClient);
+        }
+        if invitee_id as usize >= self.clients.len() {
+            return OperationResult::Error(OperationError::InvalidClient);
+        }
+
+        // Check inviter is member
+        if !self.room_membership.get(&(inviter_id, room_id)).copied().unwrap_or(false) {
+            return OperationResult::Error(OperationError::NotMember);
+        }
+
+        // Check invitee is NOT already a member
+        if self.room_membership.get(&(invitee_id, room_id)).copied().unwrap_or(false) {
+            return OperationResult::Error(OperationError::AlreadyMember);
+        }
+
+        // In a real implementation, this would involve MLS key packages and commits.
+        // For now, we just track membership.
+        self.room_membership.insert((invitee_id, room_id), true);
+        OperationResult::Ok
+    }
+
+    fn apply_remove_member(
+        &mut self,
+        remover_id: ClientId,
+        target_id: ClientId,
+        room_id: ModelRoomId,
+    ) -> OperationResult {
+        // Validate both clients exist
+        if remover_id as usize >= self.clients.len() {
+            return OperationResult::Error(OperationError::InvalidClient);
+        }
+        if target_id as usize >= self.clients.len() {
+            return OperationResult::Error(OperationError::InvalidClient);
+        }
+
+        // Cannot remove self
+        if remover_id == target_id {
+            return OperationResult::Error(OperationError::CannotRemoveSelf);
+        }
+
+        // Check remover is member
+        if !self.room_membership.get(&(remover_id, room_id)).copied().unwrap_or(false) {
+            return OperationResult::Error(OperationError::NotMember);
+        }
+
+        // Check target is member
+        if !self.room_membership.get(&(target_id, room_id)).copied().unwrap_or(false) {
+            return OperationResult::Error(OperationError::NotMember);
+        }
+
+        // In a real implementation, this would involve MLS proposals and commits.
+        self.room_membership.insert((target_id, room_id), false);
+        OperationResult::Ok
     }
 
     fn apply_create_room(&mut self, client_id: ClientId, room_id: ModelRoomId) -> OperationResult {
@@ -167,7 +237,14 @@ fn operation_strategy(num_clients: usize) -> impl Strategy<Value = Operation> {
             client_id: c,
             room_id: r
         }),
+        2 => (client_id.clone(), client_id.clone(), room_id.clone()).prop_map(|(i, e, r)| {
+            Operation::AddMember { inviter_id: i, invitee_id: e, room_id: r }
+        }),
+        1 => (client_id.clone(), client_id.clone(), room_id.clone()).prop_map(|(r, t, room)| {
+            Operation::RemoveMember { remover_id: r, target_id: t, room_id: room }
+        }),
         1 => millis.prop_map(|m| Operation::AdvanceTime { millis: m }),
+        1 => Just(Operation::DeliverPending),
     ]
 }
 
@@ -282,19 +359,161 @@ proptest! {
 
         prop_assert!(result.is_err(), "Non-member send should fail");
     }
+
+    /// Verify add member semantics.
+    #[test]
+    fn prop_add_member_semantics(
+        creator in 0..4u8,
+        invitee in 0..4u8,
+        room_id in any::<ModelRoomId>()
+    ) {
+        prop_assume!(creator != invitee);
+
+        let mut model = ModelWorld::new(4);
+
+        // Create room
+        let _ = model.apply(&Operation::CreateRoom { client_id: creator, room_id });
+
+        // Add invitee
+        let result = model.apply(&Operation::AddMember {
+            inviter_id: creator,
+            invitee_id: invitee,
+            room_id,
+        });
+        prop_assert!(result.is_ok(), "Adding new member should succeed");
+
+        // Invitee can now send
+        let result = model.apply(&Operation::SendMessage {
+            client_id: invitee,
+            room_id,
+            content: SmallMessage { seed: 1, size_class: 0 },
+        });
+        prop_assert!(result.is_ok(), "New member should be able to send");
+
+        // Adding again should fail
+        let result = model.apply(&Operation::AddMember {
+            inviter_id: creator,
+            invitee_id: invitee,
+            room_id,
+        });
+        prop_assert!(result.is_err(), "Adding existing member should fail");
+    }
+
+    /// Verify remove member semantics.
+    #[test]
+    fn prop_remove_member_semantics(
+        creator in 0..4u8,
+        target in 0..4u8,
+        room_id in any::<ModelRoomId>()
+    ) {
+        prop_assume!(creator != target);
+
+        let mut model = ModelWorld::new(4);
+
+        // Create room and add target
+        let _ = model.apply(&Operation::CreateRoom { client_id: creator, room_id });
+        let _ = model.apply(&Operation::AddMember {
+            inviter_id: creator,
+            invitee_id: target,
+            room_id,
+        });
+
+        // Remove target
+        let result = model.apply(&Operation::RemoveMember {
+            remover_id: creator,
+            target_id: target,
+            room_id,
+        });
+        prop_assert!(result.is_ok(), "Removing member should succeed");
+
+        // Target can no longer send
+        let result = model.apply(&Operation::SendMessage {
+            client_id: target,
+            room_id,
+            content: SmallMessage { seed: 1, size_class: 0 },
+        });
+        prop_assert!(result.is_err(), "Removed member should not be able to send");
+    }
+
+    /// Verify cannot remove self.
+    #[test]
+    fn prop_cannot_remove_self(
+        client_id in 0..4u8,
+        room_id in any::<ModelRoomId>()
+    ) {
+        let mut model = ModelWorld::new(4);
+
+        // Create room
+        let _ = model.apply(&Operation::CreateRoom { client_id, room_id });
+
+        // Try to remove self
+        let result = model.apply(&Operation::RemoveMember {
+            remover_id: client_id,
+            target_id: client_id,
+            room_id,
+        });
+        prop_assert!(result.is_err(), "Should not be able to remove self");
+
+        if let OperationResult::Error(e) = result {
+            prop_assert_eq!(e, OperationError::CannotRemoveSelf);
+        }
+    }
+
+    /// Verify error properties are consistent.
+    #[test]
+    fn prop_error_properties_consistent(
+        seed in any::<u64>(),
+        num_clients in 2..5usize,
+        ops in prop::collection::vec(operation_strategy(4), 0..30)
+    ) {
+        let mut model = ModelWorld::new(num_clients);
+        let mut real = RealWorld::new(num_clients, seed);
+
+        for op in ops {
+            let clamped_op = clamp_client_id(op, num_clients);
+
+            let model_result = model.apply(&clamped_op);
+            let real_result = real.apply(&clamped_op);
+
+            // If both are errors, verify properties match
+            match (&model_result, &real_result) {
+                (OperationResult::Error(m_err), OperationResult::Error(r_err)) => {
+                    let m_props = m_err.properties();
+                    let r_props = r_err.properties();
+                    prop_assert_eq!(
+                        m_props, r_props,
+                        "Error properties mismatch for {:?}: model={:?}, real={:?}",
+                        clamped_op, m_err, r_err
+                    );
+                },
+                _ => {},
+            }
+        }
+    }
 }
 
 /// Clamp client_id to valid range for the given number of clients.
 fn clamp_client_id(op: Operation, num_clients: usize) -> Operation {
+    let clamp = |id: ClientId| id % num_clients as u8;
     match op {
         Operation::CreateRoom { client_id, room_id } => {
-            Operation::CreateRoom { client_id: client_id % num_clients as u8, room_id }
+            Operation::CreateRoom { client_id: clamp(client_id), room_id }
         },
         Operation::SendMessage { client_id, room_id, content } => {
-            Operation::SendMessage { client_id: client_id % num_clients as u8, room_id, content }
+            Operation::SendMessage { client_id: clamp(client_id), room_id, content }
         },
         Operation::LeaveRoom { client_id, room_id } => {
-            Operation::LeaveRoom { client_id: client_id % num_clients as u8, room_id }
+            Operation::LeaveRoom { client_id: clamp(client_id), room_id }
+        },
+        Operation::AddMember { inviter_id, invitee_id, room_id } => Operation::AddMember {
+            inviter_id: clamp(inviter_id),
+            invitee_id: clamp(invitee_id),
+            room_id,
+        },
+        Operation::RemoveMember { remover_id, target_id, room_id } => Operation::RemoveMember {
+            remover_id: clamp(remover_id),
+            target_id: clamp(target_id),
+            room_id,
         },
         other => other,
     }
@@ -321,6 +540,9 @@ mod smoke_tests {
         });
         assert!(result.is_ok());
 
+        // Deliver pending messages
+        model.apply(&Operation::DeliverPending);
+
         // Client 1 (not member) tries to send - should fail
         let result = model.apply(&Operation::SendMessage {
             client_id: 1,
@@ -340,5 +562,90 @@ mod smoke_tests {
             content: SmallMessage { seed: 44, size_class: 1 },
         });
         assert!(result.is_err());
+    }
+
+    /// Test membership operations.
+    #[test]
+    fn model_membership_operations() {
+        let mut model = ModelWorld::new(3);
+
+        // Client 0 creates room
+        let result = model.apply(&Operation::CreateRoom { client_id: 0, room_id: 1 });
+        assert!(result.is_ok());
+
+        // Client 0 adds client 1
+        let result =
+            model.apply(&Operation::AddMember { inviter_id: 0, invitee_id: 1, room_id: 1 });
+        assert!(result.is_ok());
+
+        // Client 1 can now send
+        let result = model.apply(&Operation::SendMessage {
+            client_id: 1,
+            room_id: 1,
+            content: SmallMessage { seed: 1, size_class: 0 },
+        });
+        assert!(result.is_ok());
+
+        // Client 0 removes client 1
+        let result =
+            model.apply(&Operation::RemoveMember { remover_id: 0, target_id: 1, room_id: 1 });
+        assert!(result.is_ok());
+
+        // Client 1 can no longer send
+        let result = model.apply(&Operation::SendMessage {
+            client_id: 1,
+            room_id: 1,
+            content: SmallMessage { seed: 2, size_class: 0 },
+        });
+        assert!(result.is_err());
+    }
+
+    /// Test pending delivery semantics.
+    #[test]
+    fn model_pending_delivery() {
+        let mut model = ModelWorld::new(2);
+
+        // Client 0 creates room
+        model.apply(&Operation::CreateRoom { client_id: 0, room_id: 1 });
+
+        // Client 0 adds client 1
+        model.apply(&Operation::AddMember { inviter_id: 0, invitee_id: 1, room_id: 1 });
+
+        // Client 0 sends message (not delivered yet)
+        model.apply(&Operation::SendMessage {
+            client_id: 0,
+            room_id: 1,
+            content: SmallMessage { seed: 42, size_class: 1 },
+        });
+
+        // Check pending count
+        assert_eq!(model.server().pending_count(), 1);
+
+        // Deliver
+        model.apply(&Operation::DeliverPending);
+
+        // Pending cleared
+        assert_eq!(model.server().pending_count(), 0);
+
+        // Client 1 should have the message
+        let state = model.observable_state();
+        assert!(!state.client_messages[1].is_empty());
+    }
+
+    /// Test error properties.
+    #[test]
+    fn error_properties() {
+        // Fatal errors
+        assert!(OperationError::InvalidClient.properties().is_fatal);
+        assert!(OperationError::NotMember.properties().is_fatal);
+        assert!(OperationError::CannotRemoveSelf.properties().is_fatal);
+
+        // Non-fatal errors
+        assert!(!OperationError::RoomNotFound.properties().is_fatal);
+        assert!(!OperationError::RoomAlreadyExists.properties().is_fatal);
+        assert!(!OperationError::AlreadyMember.properties().is_fatal);
+
+        // Retryable errors
+        assert!(OperationError::EpochMismatch { expected: 1, actual: 0 }.properties().is_retryable);
     }
 }

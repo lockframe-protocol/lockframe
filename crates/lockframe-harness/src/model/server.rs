@@ -35,6 +35,20 @@ impl ServerRoomState {
     }
 }
 
+/// Maximum pending deliveries before invariant violation.
+const MAX_PENDING_DELIVERIES: usize = 1000;
+
+/// Message waiting for delivery.
+#[derive(Debug, Clone)]
+pub struct PendingMessage {
+    /// Target room.
+    pub room_id: ModelRoomId,
+    /// Message to deliver.
+    pub message: ModelMessage,
+    /// Recipients (snapshot at send time).
+    pub recipients: Vec<ClientId>,
+}
+
 /// Model server state.
 ///
 /// Tracks all rooms and their message logs.
@@ -42,12 +56,24 @@ impl ServerRoomState {
 pub struct ModelServer {
     /// Active rooms.
     rooms: HashMap<ModelRoomId, ServerRoomState>,
+    /// Messages waiting for delivery.
+    pending_deliveries: Vec<PendingMessage>,
 }
 
 impl ModelServer {
     /// Create a new model server.
     pub fn new() -> Self {
-        Self { rooms: HashMap::new() }
+        Self { rooms: HashMap::new(), pending_deliveries: Vec::new() }
+    }
+
+    /// Number of messages waiting for delivery.
+    pub fn pending_count(&self) -> usize {
+        self.pending_deliveries.len()
+    }
+
+    /// Take all pending messages for delivery.
+    pub fn take_pending(&mut self) -> Vec<PendingMessage> {
+        std::mem::take(&mut self.pending_deliveries)
     }
 
     /// Check if a room exists.
@@ -91,8 +117,8 @@ impl ModelServer {
 
     /// Process a message from a client.
     ///
-    /// Assigns log_index and stores the message.
-    /// Returns the assigned log_index and the message for distribution.
+    /// Assigns log_index and stores the message. The message is queued for
+    /// pending delivery (call `take_pending` to get messages for delivery).
     pub fn process_message(
         &mut self,
         room_id: ModelRoomId,
@@ -108,9 +134,22 @@ impl ModelServer {
         let log_index = room.next_log_index;
         room.next_log_index += 1;
 
-        let message = ModelMessage { sender_id, content, log_index };
+        let epoch = room.epoch;
+        let message = ModelMessage { sender_id, content, log_index, epoch };
 
         room.messages.push(message.clone());
+
+        let recipients: Vec<ClientId> = room.members.iter().copied().collect();
+
+        debug_assert!(
+            self.pending_deliveries.len() < MAX_PENDING_DELIVERIES,
+            "invariant: pending delivery queue exceeded bound"
+        );
+        self.pending_deliveries.push(PendingMessage {
+            room_id,
+            message: message.clone(),
+            recipients,
+        });
 
         Ok(message)
     }

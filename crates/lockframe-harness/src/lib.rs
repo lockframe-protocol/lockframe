@@ -19,8 +19,8 @@ pub mod sim_server;
 pub mod sim_transport;
 
 pub use model::{
-    ClientId, ModelClient, ModelMessage, ModelRoomId, ModelServer, ModelWorld, ObservableState,
-    Operation, OperationError, OperationResult, SmallMessage,
+    ClientId, ErrorProperties, ModelClient, ModelMessage, ModelRoomId, ModelServer, ModelWorld,
+    ObservableState, Operation, OperationError, OperationResult, PendingMessage, SmallMessage,
 };
 pub use sim_env::SimEnv;
 pub use sim_server::{SharedSimServer, SimServer, create_shared_server};

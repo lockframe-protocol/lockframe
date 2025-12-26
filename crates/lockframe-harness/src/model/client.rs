@@ -16,6 +16,8 @@ pub struct ModelMessage {
     pub content: Vec<u8>,
     /// Log index in the room.
     pub log_index: u64,
+    /// Epoch when message was sent.
+    pub epoch: u64,
 }
 
 /// Per-room state in the model client.
@@ -124,6 +126,18 @@ impl ModelClient {
         }
 
         self.rooms.insert(room_id, ModelRoomState::new());
+        OperationResult::Ok
+    }
+
+    /// Join a room at a specific epoch (after membership change).
+    pub fn join_room_at_epoch(&mut self, room_id: ModelRoomId, epoch: u64) -> OperationResult {
+        if self.rooms.contains_key(&room_id) {
+            return OperationResult::Error(OperationError::RoomAlreadyExists);
+        }
+
+        let mut state = ModelRoomState::new();
+        state.epoch = epoch;
+        self.rooms.insert(room_id, state);
         OperationResult::Ok
     }
 

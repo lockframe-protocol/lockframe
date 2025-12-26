@@ -374,9 +374,19 @@ impl<E: Environment> MlsGroup<E> {
                 });
             },
             ProcessedMessageContent::StagedCommitMessage(staged_commit) => {
+                let old_epoch = self.epoch();
+
                 self.mls_group
                     .merge_staged_commit(&self.provider, *staged_commit)
                     .map_err(|e| MlsError::Crypto(format!("Failed to merge commit: {}", e)))?;
+
+                let new_epoch = self.epoch();
+                debug_assert!(
+                    new_epoch > old_epoch,
+                    "invariant: epoch must increase after commit ({} -> {})",
+                    old_epoch,
+                    new_epoch
+                );
 
                 actions.push(MlsAction::Log {
                     message: format!("Advanced to epoch {}", self.epoch()),

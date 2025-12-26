@@ -17,7 +17,8 @@ mod world;
 
 pub use client::{ModelClient, ModelMessage};
 pub use operation::{
-    ClientId, ModelRoomId, Operation, OperationError, OperationResult, SmallMessage,
+    ClientId, ErrorProperties, ModelRoomId, Operation, OperationError, OperationResult,
+    SmallMessage,
 };
-pub use server::ModelServer;
+pub use server::{ModelServer, PendingMessage};
 pub use world::{ModelWorld, ObservableState};
