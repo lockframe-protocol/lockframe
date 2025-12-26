@@ -47,7 +47,6 @@ enum TamperedField {
     RoomId(u128),
     SenderId(u64),
     Epoch(u64),
-    LogIndex(u64),
 }
 
 #[derive(Debug, Clone, Arbitrary)]
@@ -152,10 +151,6 @@ fuzz_target!(|input: FuzzInput| {
                 }
                 TamperedField::Epoch(v) if v != tampered.header.epoch() => {
                     tampered.header.set_epoch(v);
-                    true
-                }
-                TamperedField::LogIndex(v) if v != tampered.header.log_index() => {
-                    tampered.header.set_log_index(v);
                     true
                 }
                 _ => false,
