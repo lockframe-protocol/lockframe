@@ -691,14 +691,11 @@ proptest! {
             "Epoch divergence"
         );
 
-        // TODO: Message comparison disabled - MLS pending commits aren't merged before
-        // sending messages, causing epoch mismatch. Fix requires exposing
-        // merge_pending_commit on Client API or auto-merging after AddMembers.
-        // prop_assert_eq!(
-        //     model_state.client_messages,
-        //     real_state.client_messages,
-        //     "Message divergence"
-        // );
+        prop_assert_eq!(
+            model_state.client_messages,
+            real_state.client_messages,
+            "Message divergence"
+        );
     }
 
     /// Verify model invariants hold after any operation sequence.
@@ -1008,6 +1005,190 @@ proptest! {
 
         if let OperationResult::Error(e) = result {
             prop_assert_eq!(e, OperationError::Disconnected);
+        }
+    }
+
+    /// Verify rejoin scenario: client leaves then gets re-added.
+    #[test]
+    fn prop_rejoin_after_leave(
+        creator in 0..4u8,
+        rejoiner in 0..4u8,
+        room_id in any::<ModelRoomId>(),
+        msg1 in small_message_strategy(),
+        msg2 in small_message_strategy()
+    ) {
+        prop_assume!(creator != rejoiner);
+
+        let mut model = ModelWorld::new(4);
+
+        // Setup: creator makes room, adds rejoiner
+        let _ = model.apply(&Operation::CreateRoom { client_id: creator, room_id });
+        let _ = model.apply(&Operation::AddMember {
+            inviter_id: creator,
+            invitee_id: rejoiner,
+            room_id,
+        });
+
+        // Rejoiner sends a message, then leaves
+        let result = model.apply(&Operation::SendMessage {
+            client_id: rejoiner,
+            room_id,
+            content: msg1,
+        });
+        prop_assert!(result.is_ok(), "Member should send before leaving");
+
+        let _ = model.apply(&Operation::LeaveRoom { client_id: rejoiner, room_id });
+
+        // Rejoiner can't send after leaving
+        let result = model.apply(&Operation::SendMessage {
+            client_id: rejoiner,
+            room_id,
+            content: msg2.clone(),
+        });
+        prop_assert!(result.is_err(), "Left member should not send");
+
+        // Creator re-adds rejoiner
+        let result = model.apply(&Operation::AddMember {
+            inviter_id: creator,
+            invitee_id: rejoiner,
+            room_id,
+        });
+        prop_assert!(result.is_ok(), "Re-adding left member should succeed");
+
+        // Rejoiner can send again
+        let result = model.apply(&Operation::SendMessage {
+            client_id: rejoiner,
+            room_id,
+            content: msg2,
+        });
+        prop_assert!(result.is_ok(), "Rejoined member should send");
+    }
+
+    /// Verify multi-party messaging with interleaved partitions.
+    #[test]
+    fn prop_multiparty_with_partitions(
+        room_id in any::<ModelRoomId>(),
+        messages in prop::collection::vec(small_message_strategy(), 3..8)
+    ) {
+        let mut model = ModelWorld::new(3);
+
+        // Setup room with all 3 clients
+        let _ = model.apply(&Operation::CreateRoom { client_id: 0, room_id });
+        let _ = model.apply(&Operation::AddMember { inviter_id: 0, invitee_id: 1, room_id });
+        let _ = model.apply(&Operation::AddMember { inviter_id: 0, invitee_id: 2, room_id });
+
+        // Partition client 1
+        let _ = model.apply(&Operation::Partition { client_id: 1 });
+
+        // Client 0 and 2 exchange messages while 1 is partitioned
+        for (i, content) in messages.iter().enumerate() {
+            let sender = if i % 2 == 0 { 0 } else { 2 };
+            let _ = model.apply(&Operation::SendMessage {
+                client_id: sender,
+                room_id,
+                content: content.clone(),
+            });
+        }
+
+        // Deliver to non-partitioned clients
+        let _ = model.apply(&Operation::DeliverPending);
+
+        // Client 1 should have no messages (was partitioned during send and delivery)
+        let client1_msgs = model.client_messages(1, room_id);
+        prop_assert!(
+            client1_msgs.map(|m| m.is_empty()).unwrap_or(true),
+            "Partitioned client should not receive messages"
+        );
+
+        // Clients 0 and 2 should have all messages
+        let client0_msgs = model.client_messages(0, room_id);
+        let client2_msgs = model.client_messages(2, room_id);
+        prop_assert_eq!(
+            client0_msgs.map(|m| m.len()).unwrap_or(0),
+            messages.len(),
+            "Active client 0 should have all messages"
+        );
+        prop_assert_eq!(
+            client2_msgs.map(|m| m.len()).unwrap_or(0),
+            messages.len(),
+            "Active client 2 should have all messages"
+        );
+
+        // Heal partition - client 1 still won't have missed messages
+        let _ = model.apply(&Operation::HealPartition { client_id: 1 });
+
+        // Send one more message after heal
+        let _ = model.apply(&Operation::SendMessage {
+            client_id: 0,
+            room_id,
+            content: SmallMessage { seed: 99, size_class: 0 },
+        });
+        let _ = model.apply(&Operation::DeliverPending);
+
+        // Now client 1 should have just the post-heal message
+        let client1_msgs_after = model.client_messages(1, room_id);
+        prop_assert_eq!(
+            client1_msgs_after.map(|m| m.len()).unwrap_or(0),
+            1,
+            "Healed client should receive new messages"
+        );
+    }
+
+    /// Verify concurrent membership changes maintain consistency.
+    #[test]
+    fn prop_concurrent_membership_changes(
+        room_id in any::<ModelRoomId>(),
+        ops_count in 5..15usize
+    ) {
+        let mut model = ModelWorld::new(4);
+
+        // Client 0 creates room
+        let _ = model.apply(&Operation::CreateRoom { client_id: 0, room_id });
+
+        let mut expected_members: std::collections::HashSet<ClientId> =
+            std::iter::once(0).collect();
+
+        for i in 0..ops_count {
+            let target = ((i % 3) + 1) as u8; // Clients 1, 2, 3
+
+            if expected_members.contains(&target) {
+                // Target is member, try to remove
+                let result = model.apply(&Operation::RemoveMember {
+                    remover_id: 0,
+                    target_id: target,
+                    room_id,
+                });
+                prop_assert!(result.is_ok(), "Remove existing member should succeed");
+                expected_members.remove(&target);
+            } else {
+                // Target is not member, try to add
+                let result = model.apply(&Operation::AddMember {
+                    inviter_id: 0,
+                    invitee_id: target,
+                    room_id,
+                });
+                prop_assert!(result.is_ok(), "Add non-member should succeed");
+                expected_members.insert(target);
+            }
+
+            // Verify membership matches expectation
+            let actual_rooms = model.client_rooms(target);
+            let is_member = actual_rooms.contains(&room_id);
+            prop_assert_eq!(
+                is_member,
+                expected_members.contains(&target),
+                "Membership mismatch for client {} after op {}", target, i
+            );
+        }
+
+        // Verify epoch increased with each membership change
+        let state = model.observable_state();
+        let creator_epochs = &state.client_epochs[0];
+        if let Some((_, epoch)) = creator_epochs.iter().find(|(r, _)| *r == room_id) {
+            prop_assert!(
+                *epoch >= ops_count as u64,
+                "Epoch should advance with each membership change"
+            );
         }
     }
 }

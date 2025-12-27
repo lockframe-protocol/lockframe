@@ -313,14 +313,24 @@ impl<E: Environment> Client<E> {
         room_id: RoomId,
         frame: Frame,
     ) -> Result<Vec<ClientAction>, ClientError> {
-        let mls_actions = {
-            let room = self.rooms.get_mut(&room_id).ok_or(ClientError::RoomNotFound { room_id })?;
-            room.mls_group
-                .process_message(frame)
-                .map_err(|e| ClientError::Mls { reason: e.to_string() })?
-        };
+        let is_own_commit = frame.header.sender_id() == self.identity.sender_id;
 
-        let mut actions = self.convert_mls_actions(room_id, mls_actions);
+        let mut actions = {
+            let room = self.rooms.get_mut(&room_id).ok_or(ClientError::RoomNotFound { room_id })?;
+
+            if is_own_commit && room.mls_group.has_pending_commit() {
+                room.mls_group
+                    .merge_pending_commit()
+                    .map_err(|e| ClientError::Mls { reason: e.to_string() })?;
+                Vec::new()
+            } else {
+                let mls_actions = room
+                    .mls_group
+                    .process_message(frame)
+                    .map_err(|e| ClientError::Mls { reason: e.to_string() })?;
+                self.convert_mls_actions(room_id, mls_actions)
+            }
+        };
 
         // Re-derive sender keys for new epoch from MLS state
         // We need to export the secret while holding only an immutable borrow,

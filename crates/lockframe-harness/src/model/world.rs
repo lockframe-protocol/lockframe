@@ -167,8 +167,9 @@ impl ModelWorld {
 
     /// Apply send message operation.
     ///
-    /// Message is queued for pending delivery. Call `apply_deliver_pending`
-    /// to actually deliver messages to clients.
+    /// Sender receives their own message immediately (can't decrypt after
+    /// ratchet advance). Other recipients receive via
+    /// `apply_deliver_pending`.
     fn apply_send_message(
         &mut self,
         client_id: ClientId,
@@ -189,7 +190,10 @@ impl ModelWorld {
         }
 
         match self.server.process_message(room_id, client_id, content) {
-            Ok(_) => OperationResult::Ok,
+            Ok(message) => {
+                self.clients[client_id as usize].receive_message(room_id, message);
+                OperationResult::Ok
+            },
             Err(e) => OperationResult::Error(e),
         }
     }
@@ -199,7 +203,11 @@ impl ModelWorld {
         let pending = self.server.take_pending();
 
         for pending_msg in pending {
+            let sender_id = pending_msg.message.sender_id;
             for recipient_id in pending_msg.recipients {
+                if recipient_id == sender_id {
+                    continue;
+                }
                 if let Some(client) = self.clients.get_mut(recipient_id as usize) {
                     if client.is_partitioned() {
                         continue;
