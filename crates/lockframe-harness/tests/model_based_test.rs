@@ -16,22 +16,40 @@
 
 use std::collections::HashMap;
 
-use lockframe_client::{Client, ClientIdentity};
+use lockframe_client::{Client, ClientAction, ClientEvent, ClientIdentity};
 use lockframe_harness::{
-    ClientId, ModelRoomId, ModelWorld, Operation, OperationError, OperationResult, SimEnv,
-    SmallMessage,
+    ClientId, ModelMessage, ModelRoomId, ModelWorld, ObservableState, Operation, OperationError,
+    OperationResult, SimEnv, SmallMessage,
 };
+use lockframe_proto::Frame;
 use proptest::prelude::*;
+
+/// Pending frame waiting for delivery.
+struct PendingFrame {
+    room_id: ModelRoomId,
+    frame: Frame,
+    recipients: Vec<ClientId>,
+}
+
+/// Delivered message for observable state.
+struct DeliveredMessage {
+    room_id: ModelRoomId,
+    sender_id: u64,
+    content: Vec<u8>,
+    log_index: u64,
+    epoch: u64,
+}
 
 /// Real system wrapper that mirrors ModelWorld's interface.
 struct RealWorld {
     clients: Vec<Client<SimEnv>>,
-    /// Environment for time/randomness (kept for future AdvanceTime support).
     #[allow(dead_code)]
     env: SimEnv,
-    /// Track room membership (real client tracks internally but we need to map
-    /// room IDs)
     room_membership: HashMap<(ClientId, ModelRoomId), bool>,
+    room_epochs: HashMap<(ClientId, ModelRoomId), u64>,
+    pending_frames: Vec<PendingFrame>,
+    delivered_messages: Vec<(ClientId, DeliveredMessage)>,
+    next_log_index: HashMap<ModelRoomId, u64>,
 }
 
 impl RealWorld {
@@ -39,12 +57,20 @@ impl RealWorld {
         let env = SimEnv::with_seed(seed);
         let clients = (0..num_clients)
             .map(|i| {
-                let identity = ClientIdentity::new(i as u64 + 1); // sender_id starts at 1
+                let identity = ClientIdentity::new(i as u64 + 1);
                 Client::new(env.clone(), identity)
             })
             .collect();
 
-        Self { clients, env, room_membership: HashMap::new() }
+        Self {
+            clients,
+            env,
+            room_membership: HashMap::new(),
+            room_epochs: HashMap::new(),
+            pending_frames: Vec::new(),
+            delivered_messages: Vec::new(),
+            next_log_index: HashMap::new(),
+        }
     }
 
     fn apply(&mut self, op: &Operation) -> OperationResult {
@@ -64,7 +90,112 @@ impl RealWorld {
             Operation::RemoveMember { remover_id, target_id, room_id } => {
                 self.apply_remove_member(*remover_id, *target_id, *room_id)
             },
-            Operation::AdvanceTime { .. } | Operation::DeliverPending => OperationResult::Ok,
+            Operation::AdvanceTime { .. } => OperationResult::Ok,
+            Operation::DeliverPending => {
+                self.apply_deliver_pending();
+                OperationResult::Ok
+            },
+        }
+    }
+
+    fn apply_deliver_pending(&mut self) {
+        let pending = std::mem::take(&mut self.pending_frames);
+
+        for pf in pending {
+            for &recipient_id in &pf.recipients {
+                if !self.room_membership.get(&(recipient_id, pf.room_id)).copied().unwrap_or(false)
+                {
+                    continue;
+                }
+
+                let client = match self.clients.get_mut(recipient_id as usize) {
+                    Some(c) => c,
+                    None => continue,
+                };
+
+                let result = client.handle(ClientEvent::FrameReceived(pf.frame.clone()));
+                if let Ok(actions) = result {
+                    for action in actions {
+                        if let ClientAction::DeliverMessage {
+                            sender_id,
+                            plaintext,
+                            log_index,
+                            ..
+                        } = action
+                        {
+                            self.delivered_messages.push((recipient_id, DeliveredMessage {
+                                room_id: pf.room_id,
+                                sender_id,
+                                content: plaintext,
+                                log_index,
+                                epoch: pf.frame.header.epoch(),
+                            }));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    fn observable_state(&self) -> ObservableState {
+        let num_clients = self.clients.len();
+        let mut client_rooms: Vec<Vec<ModelRoomId>> = vec![Vec::new(); num_clients];
+        let mut client_epochs: Vec<Vec<(ModelRoomId, u64)>> = vec![Vec::new(); num_clients];
+        let mut client_messages: Vec<Vec<(ModelRoomId, Vec<ModelMessage>)>> =
+            vec![Vec::new(); num_clients];
+
+        // Build room memberships and epochs
+        for (&(client_id, room_id), &is_member) in &self.room_membership {
+            if is_member {
+                let idx = client_id as usize;
+                if idx < num_clients {
+                    client_rooms[idx].push(room_id);
+                    let epoch = self.room_epochs.get(&(client_id, room_id)).copied().unwrap_or(0);
+                    client_epochs[idx].push((room_id, epoch));
+                }
+            }
+        }
+
+        // Sort for deterministic comparison
+        for rooms in &mut client_rooms {
+            rooms.sort();
+        }
+        for epochs in &mut client_epochs {
+            epochs.sort_by_key(|(r, _)| *r);
+        }
+
+        // Build messages per client per room
+        let mut msg_map: HashMap<(ClientId, ModelRoomId), Vec<ModelMessage>> = HashMap::new();
+        for (client_id, dm) in &self.delivered_messages {
+            let key = (*client_id, dm.room_id);
+            msg_map.entry(key).or_default().push(ModelMessage {
+                sender_id: dm.sender_id as ClientId,
+                content: dm.content.clone(),
+                log_index: dm.log_index,
+                epoch: dm.epoch,
+            });
+        }
+
+        // Sort each message list by log_index for deterministic ordering
+        for msgs in msg_map.values_mut() {
+            msgs.sort_by_key(|m| m.log_index);
+        }
+
+        for (idx, rooms) in client_rooms.iter().enumerate() {
+            let client_id = idx as ClientId;
+            let mut room_msgs = Vec::new();
+            for &room_id in rooms {
+                let msgs = msg_map.get(&(client_id, room_id)).cloned().unwrap_or_default();
+                room_msgs.push((room_id, msgs));
+            }
+            client_messages[idx] = room_msgs;
+        }
+
+        ObservableState {
+            client_rooms,
+            client_messages,
+            client_epochs,
+            server_messages: Vec::new(),
         }
     }
 
@@ -74,7 +205,6 @@ impl RealWorld {
         invitee_id: ClientId,
         room_id: ModelRoomId,
     ) -> OperationResult {
-        // Validate both clients exist
         if inviter_id as usize >= self.clients.len() {
             return OperationResult::Error(OperationError::InvalidClient);
         }
@@ -82,19 +212,32 @@ impl RealWorld {
             return OperationResult::Error(OperationError::InvalidClient);
         }
 
-        // Check inviter is member
         if !self.room_membership.get(&(inviter_id, room_id)).copied().unwrap_or(false) {
             return OperationResult::Error(OperationError::NotMember);
         }
 
-        // Check invitee is NOT already a member
         if self.room_membership.get(&(invitee_id, room_id)).copied().unwrap_or(false) {
             return OperationResult::Error(OperationError::AlreadyMember);
         }
 
-        // In a real implementation, this would involve MLS key packages and commits.
-        // For now, we just track membership.
+        // Advance epoch for existing members
+        let members: Vec<ClientId> = self
+            .room_membership
+            .iter()
+            .filter(|&(&(_, rid), &m)| m && rid == room_id)
+            .map(|(&(cid, _), _)| cid)
+            .collect();
+
+        for cid in &members {
+            let epoch = self.room_epochs.entry((*cid, room_id)).or_insert(0);
+            *epoch += 1;
+        }
+
+        // Add invitee at new epoch
+        let new_epoch = self.room_epochs.get(&(inviter_id, room_id)).copied().unwrap_or(0);
         self.room_membership.insert((invitee_id, room_id), true);
+        self.room_epochs.insert((invitee_id, room_id), new_epoch);
+
         OperationResult::Ok
     }
 
@@ -104,7 +247,6 @@ impl RealWorld {
         target_id: ClientId,
         room_id: ModelRoomId,
     ) -> OperationResult {
-        // Validate both clients exist
         if remover_id as usize >= self.clients.len() {
             return OperationResult::Error(OperationError::InvalidClient);
         }
@@ -112,23 +254,35 @@ impl RealWorld {
             return OperationResult::Error(OperationError::InvalidClient);
         }
 
-        // Cannot remove self
         if remover_id == target_id {
             return OperationResult::Error(OperationError::CannotRemoveSelf);
         }
 
-        // Check remover is member
         if !self.room_membership.get(&(remover_id, room_id)).copied().unwrap_or(false) {
             return OperationResult::Error(OperationError::NotMember);
         }
 
-        // Check target is member
         if !self.room_membership.get(&(target_id, room_id)).copied().unwrap_or(false) {
             return OperationResult::Error(OperationError::NotMember);
         }
 
-        // In a real implementation, this would involve MLS proposals and commits.
+        // Remove target
         self.room_membership.insert((target_id, room_id), false);
+        self.room_epochs.remove(&(target_id, room_id));
+
+        // Advance epoch for remaining members
+        let remaining: Vec<ClientId> = self
+            .room_membership
+            .iter()
+            .filter(|&(&(_, rid), &m)| m && rid == room_id)
+            .map(|(&(cid, _), _)| cid)
+            .collect();
+
+        for cid in &remaining {
+            let epoch = self.room_epochs.entry((*cid, room_id)).or_insert(0);
+            *epoch += 1;
+        }
+
         OperationResult::Ok
     }
 
@@ -138,20 +292,18 @@ impl RealWorld {
             None => return OperationResult::Error(OperationError::InvalidClient),
         };
 
-        // Map ModelRoomId (u8) to real RoomId (u128)
-        let real_room_id = room_id as u128 + 1; // Avoid room_id 0
+        let real_room_id = room_id as u128 + 1;
 
-        // Check if already member
         if self.room_membership.get(&(client_id, room_id)).copied().unwrap_or(false) {
             return OperationResult::Error(OperationError::RoomAlreadyExists);
         }
 
-        use lockframe_client::ClientEvent;
         let result = client.handle(ClientEvent::CreateRoom { room_id: real_room_id });
 
         match result {
-            Ok(_actions) => {
+            Ok(_) => {
                 self.room_membership.insert((client_id, room_id), true);
+                self.room_epochs.insert((client_id, room_id), 0);
                 OperationResult::Ok
             },
             Err(_) => OperationResult::Error(OperationError::RoomAlreadyExists),
@@ -169,7 +321,6 @@ impl RealWorld {
             None => return OperationResult::Error(OperationError::InvalidClient),
         };
 
-        // Check membership
         if !self.room_membership.get(&(client_id, room_id)).copied().unwrap_or(false) {
             return OperationResult::Error(OperationError::NotMember);
         }
@@ -177,11 +328,51 @@ impl RealWorld {
         let real_room_id = room_id as u128 + 1;
         let plaintext = content.to_bytes();
 
-        use lockframe_client::ClientEvent;
-        let result = client.handle(ClientEvent::SendMessage { room_id: real_room_id, plaintext });
+        let result = client.handle(ClientEvent::SendMessage {
+            room_id: real_room_id,
+            plaintext: plaintext.clone(),
+        });
 
         match result {
-            Ok(_actions) => OperationResult::Ok,
+            Ok(actions) => {
+                // Collect Send actions and queue as pending
+                for action in actions {
+                    if let ClientAction::Send(frame) = action {
+                        // Other members who need to receive this message
+                        let other_recipients: Vec<ClientId> = self
+                            .room_membership
+                            .iter()
+                            .filter(|&(&(cid, rid), &m)| m && rid == room_id && cid != client_id)
+                            .map(|(&(cid, _), _)| cid)
+                            .collect();
+
+                        // Assign log_index (simulates server sequencing)
+                        let log_index_val = *self.next_log_index.entry(room_id).or_insert(0);
+                        let mut sequenced_frame = frame;
+                        sequenced_frame.header.set_log_index(log_index_val);
+                        *self.next_log_index.get_mut(&room_id).unwrap() += 1;
+
+                        // Sender stores their own message directly (they already have plaintext)
+                        self.delivered_messages.push((client_id, DeliveredMessage {
+                            room_id,
+                            sender_id: client_id as u64,
+                            content: plaintext.clone(),
+                            log_index: log_index_val,
+                            epoch: sequenced_frame.header.epoch(),
+                        }));
+
+                        // Queue for delivery to other members only
+                        if !other_recipients.is_empty() {
+                            self.pending_frames.push(PendingFrame {
+                                room_id,
+                                frame: sequenced_frame,
+                                recipients: other_recipients,
+                            });
+                        }
+                    }
+                }
+                OperationResult::Ok
+            },
             Err(_) => OperationResult::Error(OperationError::NotMember),
         }
     }
@@ -192,19 +383,32 @@ impl RealWorld {
             None => return OperationResult::Error(OperationError::InvalidClient),
         };
 
-        // Check membership
         if !self.room_membership.get(&(client_id, room_id)).copied().unwrap_or(false) {
             return OperationResult::Error(OperationError::NotMember);
         }
 
         let real_room_id = room_id as u128 + 1;
 
-        use lockframe_client::ClientEvent;
         let result = client.handle(ClientEvent::LeaveRoom { room_id: real_room_id });
 
         match result {
-            Ok(_actions) => {
+            Ok(_) => {
                 self.room_membership.insert((client_id, room_id), false);
+                self.room_epochs.remove(&(client_id, room_id));
+
+                // Advance epoch for remaining members
+                let remaining: Vec<ClientId> = self
+                    .room_membership
+                    .iter()
+                    .filter(|&(&(_, rid), &m)| m && rid == room_id)
+                    .map(|(&(cid, _), _)| cid)
+                    .collect();
+
+                for cid in &remaining {
+                    let epoch = self.room_epochs.entry((*cid, room_id)).or_insert(0);
+                    *epoch += 1;
+                }
+
                 OperationResult::Ok
             },
             Err(_) => OperationResult::Error(OperationError::NotMember),
@@ -263,13 +467,11 @@ proptest! {
         let mut real = RealWorld::new(num_clients, seed);
 
         for (i, op) in ops.iter().enumerate() {
-            // Clamp client_id to valid range
             let clamped_op = clamp_client_id(op.clone(), num_clients);
 
             let model_result = model.apply(&clamped_op);
             let real_result = real.apply(&clamped_op);
 
-            // Results must match
             prop_assert_eq!(
                 model_result.is_ok(),
                 real_result.is_ok(),
@@ -277,6 +479,31 @@ proptest! {
                 i, clamped_op, model_result, real_result
             );
         }
+
+        // Deliver pending and compare observable state
+        model.apply(&Operation::DeliverPending);
+        real.apply(&Operation::DeliverPending);
+
+        let model_state = model.observable_state();
+        let real_state = real.observable_state();
+
+        prop_assert_eq!(
+            model_state.client_rooms,
+            real_state.client_rooms,
+            "Room membership divergence"
+        );
+
+        prop_assert_eq!(
+            model_state.client_epochs,
+            real_state.client_epochs,
+            "Epoch divergence"
+        );
+
+        prop_assert_eq!(
+            model_state.client_messages,
+            real_state.client_messages,
+            "Message divergence"
+        );
     }
 
     /// Verify model invariants hold after any operation sequence.
@@ -647,5 +874,41 @@ mod smoke_tests {
 
         // Retryable errors
         assert!(OperationError::EpochMismatch { expected: 1, actual: 0 }.properties().is_retryable);
+    }
+
+    /// Test observable state comparison between model and real.
+    #[test]
+    fn observable_state_matches() {
+        let mut model = ModelWorld::new(2);
+        let mut real = RealWorld::new(2, 12345);
+
+        // Create room
+        model.apply(&Operation::CreateRoom { client_id: 0, room_id: 1 });
+        real.apply(&Operation::CreateRoom { client_id: 0, room_id: 1 });
+
+        // Send message
+        model.apply(&Operation::SendMessage {
+            client_id: 0,
+            room_id: 1,
+            content: SmallMessage { seed: 42, size_class: 1 },
+        });
+        real.apply(&Operation::SendMessage {
+            client_id: 0,
+            room_id: 1,
+            content: SmallMessage { seed: 42, size_class: 1 },
+        });
+
+        // Deliver
+        model.apply(&Operation::DeliverPending);
+        real.apply(&Operation::DeliverPending);
+
+        // Compare observable state
+        let model_state = model.observable_state();
+        let real_state = real.observable_state();
+
+        assert_eq!(model_state.client_rooms, real_state.client_rooms);
+        assert_eq!(model_state.client_epochs, real_state.client_epochs);
+        // Full message comparison: content, sender_id, log_index should all match
+        assert_eq!(model_state.client_messages, real_state.client_messages);
     }
 }

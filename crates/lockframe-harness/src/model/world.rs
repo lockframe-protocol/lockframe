@@ -16,10 +16,12 @@ use super::{
 /// against the real implementation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ObservableState {
-    /// Per-client room memberships.
+    /// Per-client room memberships (sorted).
     pub client_rooms: Vec<Vec<ModelRoomId>>,
     /// Per-client, per-room message lists.
     pub client_messages: Vec<Vec<(ModelRoomId, Vec<ModelMessage>)>>,
+    /// Per-client, per-room epochs.
+    pub client_epochs: Vec<Vec<(ModelRoomId, u64)>>,
     /// Server's view of messages per room.
     pub server_messages: Vec<(ModelRoomId, Vec<ModelMessage>)>,
 }
@@ -95,6 +97,7 @@ impl ModelWorld {
     pub fn observable_state(&self) -> ObservableState {
         let mut client_rooms = Vec::with_capacity(self.clients.len());
         let mut client_messages = Vec::with_capacity(self.clients.len());
+        let mut client_epochs = Vec::with_capacity(self.clients.len());
 
         for client in &self.clients {
             let mut rooms: Vec<_> = client.rooms().collect();
@@ -102,12 +105,17 @@ impl ModelWorld {
             client_rooms.push(rooms.clone());
 
             let mut messages = Vec::new();
+            let mut epochs = Vec::new();
             for room_id in rooms {
                 if let Some(msgs) = client.messages(room_id) {
                     messages.push((room_id, msgs.to_vec()));
                 }
+                if let Some(epoch) = client.epoch(room_id) {
+                    epochs.push((room_id, epoch));
+                }
             }
             client_messages.push(messages);
+            client_epochs.push(epochs);
         }
 
         let mut server_messages = Vec::new();
@@ -126,7 +134,7 @@ impl ModelWorld {
             }
         }
 
-        ObservableState { client_rooms, client_messages, server_messages }
+        ObservableState { client_rooms, client_messages, client_epochs, server_messages }
     }
 
     /// Apply create room operation.
