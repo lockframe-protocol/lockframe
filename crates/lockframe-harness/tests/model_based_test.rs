@@ -51,6 +51,8 @@ struct RealWorld {
     delivered_messages: Vec<(ClientId, DeliveredMessage)>,
     next_log_index: HashMap<ModelRoomId, u64>,
     key_packages: HashMap<ClientId, Vec<Vec<u8>>>,
+    partitioned: HashMap<ClientId, bool>,
+    disconnected: HashMap<ClientId, bool>,
 }
 
 const KEY_PACKAGES_PER_CLIENT: usize = 10;
@@ -86,6 +88,8 @@ impl RealWorld {
             delivered_messages: Vec::new(),
             next_log_index: HashMap::new(),
             key_packages,
+            partitioned: HashMap::new(),
+            disconnected: HashMap::new(),
         }
     }
 
@@ -111,6 +115,9 @@ impl RealWorld {
                 self.apply_deliver_pending();
                 OperationResult::Ok
             },
+            Operation::Partition { client_id } => self.apply_partition(*client_id),
+            Operation::HealPartition { client_id } => self.apply_heal_partition(*client_id),
+            Operation::Disconnect { client_id } => self.apply_disconnect(*client_id),
         }
     }
 
@@ -119,6 +126,9 @@ impl RealWorld {
 
         for pf in pending {
             for &recipient_id in &pf.recipients {
+                if self.partitioned.get(&recipient_id).copied().unwrap_or(false) {
+                    continue;
+                }
                 if !self.room_membership.get(&(recipient_id, pf.room_id)).copied().unwrap_or(false)
                 {
                     continue;
@@ -396,10 +406,13 @@ impl RealWorld {
     }
 
     fn apply_create_room(&mut self, client_id: ClientId, room_id: ModelRoomId) -> OperationResult {
-        let client = match self.clients.get_mut(client_id as usize) {
-            Some(c) => c,
-            None => return OperationResult::Error(OperationError::InvalidClient),
-        };
+        if client_id as usize >= self.clients.len() {
+            return OperationResult::Error(OperationError::InvalidClient);
+        }
+
+        if self.disconnected.get(&client_id).copied().unwrap_or(false) {
+            return OperationResult::Error(OperationError::Disconnected);
+        }
 
         let real_room_id = room_id as u128 + 1;
 
@@ -407,6 +420,7 @@ impl RealWorld {
             return OperationResult::Error(OperationError::RoomAlreadyExists);
         }
 
+        let client = &mut self.clients[client_id as usize];
         let result = client.handle(ClientEvent::CreateRoom { room_id: real_room_id });
 
         match result {
@@ -429,6 +443,10 @@ impl RealWorld {
             Some(c) => c,
             None => return OperationResult::Error(OperationError::InvalidClient),
         };
+
+        if self.partitioned.get(&client_id).copied().unwrap_or(false) {
+            return OperationResult::Error(OperationError::Partitioned);
+        }
 
         if !self.room_membership.get(&(client_id, room_id)).copied().unwrap_or(false) {
             return OperationResult::Error(OperationError::NotMember);
@@ -521,6 +539,71 @@ impl RealWorld {
             Err(_) => OperationResult::Error(OperationError::NotMember),
         }
     }
+
+    fn apply_partition(&mut self, client_id: ClientId) -> OperationResult {
+        if client_id as usize >= self.clients.len() {
+            return OperationResult::Error(OperationError::InvalidClient);
+        }
+
+        if self.disconnected.get(&client_id).copied().unwrap_or(false) {
+            return OperationResult::Error(OperationError::Disconnected);
+        }
+
+        self.partitioned.insert(client_id, true);
+        OperationResult::Ok
+    }
+
+    fn apply_heal_partition(&mut self, client_id: ClientId) -> OperationResult {
+        if client_id as usize >= self.clients.len() {
+            return OperationResult::Error(OperationError::InvalidClient);
+        }
+
+        if self.disconnected.get(&client_id).copied().unwrap_or(false) {
+            return OperationResult::Error(OperationError::Disconnected);
+        }
+
+        self.partitioned.insert(client_id, false);
+        OperationResult::Ok
+    }
+
+    fn apply_disconnect(&mut self, client_id: ClientId) -> OperationResult {
+        if client_id as usize >= self.clients.len() {
+            return OperationResult::Error(OperationError::InvalidClient);
+        }
+
+        if self.disconnected.get(&client_id).copied().unwrap_or(false) {
+            return OperationResult::Error(OperationError::Disconnected);
+        }
+
+        self.disconnected.insert(client_id, true);
+        self.partitioned.insert(client_id, true);
+
+        let rooms: Vec<ModelRoomId> = self
+            .room_membership
+            .iter()
+            .filter(|&(&(cid, _), &m)| m && cid == client_id)
+            .map(|(&(_, rid), _)| rid)
+            .collect();
+
+        for room_id in rooms {
+            self.room_membership.insert((client_id, room_id), false);
+            self.room_epochs.remove(&(client_id, room_id));
+
+            let remaining: Vec<ClientId> = self
+                .room_membership
+                .iter()
+                .filter(|&(&(_, rid), &m)| m && rid == room_id)
+                .map(|(&(cid, _), _)| cid)
+                .collect();
+
+            for cid in &remaining {
+                let epoch = self.room_epochs.entry((*cid, room_id)).or_insert(0);
+                *epoch += 1;
+            }
+        }
+
+        OperationResult::Ok
+    }
 }
 
 /// Strategy for generating SmallMessage.
@@ -556,6 +639,9 @@ fn operation_strategy(num_clients: usize) -> impl Strategy<Value = Operation> {
         }),
         1 => millis.prop_map(|m| Operation::AdvanceTime { millis: m }),
         1 => Just(Operation::DeliverPending),
+        1 => client_id.clone().prop_map(|c| Operation::Partition { client_id: c }),
+        1 => client_id.clone().prop_map(|c| Operation::HealPartition { client_id: c }),
+        1 => client_id.clone().prop_map(|c| Operation::Disconnect { client_id: c }),
     ]
 }
 

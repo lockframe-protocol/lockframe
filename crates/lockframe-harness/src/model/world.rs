@@ -90,6 +90,9 @@ impl ModelWorld {
                 self.apply_deliver_pending();
                 OperationResult::Ok
             },
+            Operation::Partition { client_id } => self.apply_partition(*client_id),
+            Operation::HealPartition { client_id } => self.apply_heal_partition(*client_id),
+            Operation::Disconnect { client_id } => self.apply_disconnect(*client_id),
         }
     }
 
@@ -147,6 +150,10 @@ impl ModelWorld {
             None => return OperationResult::Error(OperationError::InvalidClient),
         };
 
+        if client.is_disconnected() {
+            return OperationResult::Error(OperationError::Disconnected);
+        }
+
         let client_result = client.create_room(room_id);
         if client_result.is_err() {
             return client_result;
@@ -172,7 +179,12 @@ impl ModelWorld {
             return OperationResult::Error(OperationError::InvalidClient);
         }
 
-        if !self.clients[client_id as usize].is_member(room_id) {
+        let client = &self.clients[client_id as usize];
+        if client.is_partitioned() {
+            return OperationResult::Error(OperationError::Partitioned);
+        }
+
+        if !client.is_member(room_id) {
             return OperationResult::Error(OperationError::NotMember);
         }
 
@@ -189,7 +201,9 @@ impl ModelWorld {
         for pending_msg in pending {
             for recipient_id in pending_msg.recipients {
                 if let Some(client) = self.clients.get_mut(recipient_id as usize) {
-                    // Only deliver if still a member (may have left between send and delivery)
+                    if client.is_partitioned() {
+                        continue;
+                    }
                     if client.is_member(pending_msg.room_id) {
                         client.receive_message(pending_msg.room_id, pending_msg.message.clone());
                     }
@@ -317,5 +331,62 @@ impl ModelWorld {
     /// All rooms a client is a member of.
     pub fn client_rooms(&self, client_id: ClientId) -> Vec<ModelRoomId> {
         self.clients.get(client_id as usize).map(|c| c.rooms().collect()).unwrap_or_default()
+    }
+
+    /// Partition a client from the server.
+    fn apply_partition(&mut self, client_id: ClientId) -> OperationResult {
+        let client = match self.clients.get_mut(client_id as usize) {
+            Some(c) => c,
+            None => return OperationResult::Error(OperationError::InvalidClient),
+        };
+
+        if client.is_disconnected() {
+            return OperationResult::Error(OperationError::Disconnected);
+        }
+
+        client.partition();
+        OperationResult::Ok
+    }
+
+    /// Heal a partition, restoring connectivity.
+    fn apply_heal_partition(&mut self, client_id: ClientId) -> OperationResult {
+        let client = match self.clients.get_mut(client_id as usize) {
+            Some(c) => c,
+            None => return OperationResult::Error(OperationError::InvalidClient),
+        };
+
+        if client.is_disconnected() {
+            return OperationResult::Error(OperationError::Disconnected);
+        }
+
+        client.heal_partition();
+        OperationResult::Ok
+    }
+
+    /// Disconnect a client, removing from all rooms.
+    fn apply_disconnect(&mut self, client_id: ClientId) -> OperationResult {
+        let client = match self.clients.get_mut(client_id as usize) {
+            Some(c) => c,
+            None => return OperationResult::Error(OperationError::InvalidClient),
+        };
+
+        if client.is_disconnected() {
+            return OperationResult::Error(OperationError::Disconnected);
+        }
+
+        let rooms = client.disconnect();
+
+        for room_id in rooms {
+            let _ = self.server.remove_member(room_id, client_id);
+            self.server.advance_epoch(room_id);
+
+            for other_client in &mut self.clients {
+                if other_client.is_member(room_id) {
+                    other_client.advance_epoch(room_id);
+                }
+            }
+        }
+
+        OperationResult::Ok
     }
 }

@@ -46,12 +46,16 @@ pub struct ModelClient {
     id: ClientId,
     /// Active room memberships.
     rooms: HashMap<ModelRoomId, ModelRoomState>,
+    /// Whether client is partitioned from server.
+    partitioned: bool,
+    /// Whether client has disconnected.
+    disconnected: bool,
 }
 
 impl ModelClient {
     /// Create a new model client.
     pub fn new(id: ClientId) -> Self {
-        Self { id, rooms: HashMap::new() }
+        Self { id, rooms: HashMap::new(), partitioned: false, disconnected: false }
     }
 
     /// Client identifier.
@@ -146,5 +150,34 @@ impl ModelClient {
         if let Some(room) = self.rooms.get_mut(&room_id) {
             room.epoch += 1;
         }
+    }
+
+    /// Whether client is partitioned from server.
+    pub fn is_partitioned(&self) -> bool {
+        self.partitioned
+    }
+
+    /// Whether client has disconnected.
+    pub fn is_disconnected(&self) -> bool {
+        self.disconnected
+    }
+
+    /// Partition client from server.
+    pub fn partition(&mut self) {
+        self.partitioned = true;
+    }
+
+    /// Heal partition, restoring connectivity.
+    pub fn heal_partition(&mut self) {
+        self.partitioned = false;
+    }
+
+    /// Disconnect client, clearing all room memberships.
+    pub fn disconnect(&mut self) -> Vec<ModelRoomId> {
+        self.disconnected = true;
+        self.partitioned = true;
+        let rooms: Vec<_> = self.rooms.keys().copied().collect();
+        self.rooms.clear();
+        rooms
     }
 }

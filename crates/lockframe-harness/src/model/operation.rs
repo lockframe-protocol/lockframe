@@ -76,6 +76,28 @@ pub enum Operation {
     ///
     /// Flushes pending message queue to recipients.
     DeliverPending,
+
+    /// Partition a client from the server.
+    ///
+    /// Partitioned clients cannot send or receive messages until healed.
+    Partition {
+        /// Client to partition.
+        client_id: ClientId,
+    },
+
+    /// Heal a partition, restoring connectivity.
+    HealPartition {
+        /// Client to restore.
+        client_id: ClientId,
+    },
+
+    /// Disconnect a client completely.
+    ///
+    /// Removes client from all rooms and advances epochs for remaining members.
+    Disconnect {
+        /// Client disconnecting.
+        client_id: ClientId,
+    },
 }
 
 /// Small message content for testing.
@@ -145,6 +167,12 @@ pub enum OperationError {
         /// Actual epoch in message.
         actual: u64,
     },
+
+    /// Client is partitioned from the server.
+    Partitioned,
+
+    /// Client is already disconnected.
+    Disconnected,
 }
 
 /// Error classification properties for comparison.
@@ -163,7 +191,7 @@ impl OperationError {
     pub fn properties(&self) -> ErrorProperties {
         match self {
             // Fatal errors: protocol violations, invalid state
-            Self::InvalidClient | Self::NotMember | Self::CannotRemoveSelf => {
+            Self::InvalidClient | Self::NotMember | Self::CannotRemoveSelf | Self::Disconnected => {
                 ErrorProperties { is_fatal: true, is_retryable: false }
             },
 
@@ -172,8 +200,10 @@ impl OperationError {
                 ErrorProperties { is_fatal: false, is_retryable: false }
             },
 
-            // Retryable errors: sync can fix
-            Self::EpochMismatch { .. } => ErrorProperties { is_fatal: false, is_retryable: true },
+            // Retryable errors: sync can fix, or wait for partition heal
+            Self::EpochMismatch { .. } | Self::Partitioned => {
+                ErrorProperties { is_fatal: false, is_retryable: true }
+            },
         }
     }
 }
