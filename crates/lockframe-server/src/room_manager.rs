@@ -1,8 +1,8 @@
 //! Room Manager
 //!
-//! Orchestrates MLS validation and frame sequencing for rooms. Creates rooms
-//! with authorization metadata, verifies frames against group state before
-//! sequencing, and assigns log indices for total ordering.
+//! Routes frames between clients and assigns log indices for total ordering.
+//! The server is a routing-only node - it does NOT participate in MLS.
+//! Clients own the MLS group state; the server just sequences and broadcasts.
 //!
 //! Rooms must be explicitly created (no lazy creation) to prevent accidental
 //! rooms and enable future auth. RoomMetadata is an extension point for
@@ -10,11 +10,8 @@
 
 use std::collections::HashMap;
 
-use lockframe_core::{
-    env::Environment,
-    mls::{MlsValidator, ValidationResult, error::MlsError, group::MlsGroup, state::MlsGroupState},
-};
-use lockframe_proto::{Frame, Opcode};
+use lockframe_core::env::Environment;
+use lockframe_proto::Frame;
 
 use crate::{
     sequencer::{Sequencer, SequencerAction, SequencerError},
@@ -31,13 +28,9 @@ pub struct RoomMetadata {
     // Future: admins, members, permissions
 }
 
-/// Orchestrates MLS validation + frame sequencing per room
-pub struct RoomManager<E>
-where
-    E: Environment,
-{
-    /// Per-room MLS group state
-    groups: HashMap<u128, MlsGroup<E>>,
+/// Routes frames between clients, assigns log indices.
+/// Server is routing-only - does NOT participate in MLS.
+pub struct RoomManager {
     /// Frame sequencer (assigns log indices)
     sequencer: Sequencer,
     /// Room metadata (for future authorization)
@@ -71,16 +64,6 @@ pub enum RoomAction {
         processed_at: std::time::Instant,
     },
 
-    /// Persist updated MLS state
-    PersistMlsState {
-        /// Room ID
-        room_id: u128,
-        /// Updated MLS state to persist
-        state: MlsGroupState,
-        /// When the state was updated
-        processed_at: std::time::Instant,
-    },
-
     /// Reject frame (send error to sender)
     Reject {
         /// Sender who should receive the rejection
@@ -101,8 +84,6 @@ pub enum RoomAction {
         frames: Vec<Vec<u8>>,
         /// Whether more frames are available
         has_more: bool,
-        /// Current epoch for this room
-        server_epoch: u64,
         /// When the response was prepared
         processed_at: std::time::Instant,
     },
@@ -111,10 +92,6 @@ pub enum RoomAction {
 /// Errors from RoomManager operations
 #[derive(Debug, thiserror::Error)]
 pub enum RoomError {
-    /// MLS validation failed
-    #[error("MLS validation failed: {0}")]
-    MlsValidation(#[from] MlsError),
-
     /// Sequencer error occurred
     #[error("Sequencer error: {0}")]
     Sequencing(#[from] SequencerError),
@@ -130,112 +107,12 @@ pub enum RoomError {
     /// Room already exists
     #[error("Room already exists: {0:032x}")]
     RoomAlreadyExists(u128),
-
-    /// Epoch mismatch
-    #[error("epoch mismatch: expected {expected}, got {actual}")]
-    InvalidEpoch {
-        /// Expected epoch number
-        expected: u64,
-        /// Actual epoch number received
-        actual: u64,
-    },
-
-    /// Not a member of the group
-    #[error("not a member: {0}")]
-    NotMember(u64),
 }
 
-impl<E> RoomManager<E>
-where
-    E: Environment,
-{
-    /// Validate basic frame properties (epoch, membership) without signature
-    /// verification This is done before sequencing to ensure the frame is
-    /// worth processing
-    fn validate_frame_basic(
-        &self,
-        frame: &Frame,
-        group: &MlsGroup<E>,
-        mls_state: Option<&MlsGroupState>,
-    ) -> Result<(), RoomError> {
-        let frame_epoch = frame.header.epoch();
-        if frame_epoch != group.epoch() {
-            return Err(RoomError::InvalidEpoch { expected: group.epoch(), actual: frame_epoch });
-        }
-
-        let sender_id = frame.header.sender_id();
-        if let Some(state) = mls_state {
-            if !state.is_member(sender_id) {
-                return Err(RoomError::NotMember(sender_id));
-            }
-        }
-
-        if let Some(state) = mls_state {
-            // We do signature validation after sequencing
-            // For now, just ensure the member has a key stored
-            if state.member_key(sender_id).is_none() {
-                return Err(RoomError::MlsValidation(
-                    lockframe_core::mls::MlsError::MemberNotFound { member_id: sender_id },
-                ));
-            }
-        } else {
-            // No MLS state, expect epoch 0 frame
-            if frame_epoch != 0 {
-                return Err(RoomError::InvalidEpoch { expected: 0, actual: frame_epoch });
-            }
-        }
-
-        Ok(())
-    }
-
-    /// Validate signatures on sequenced frames after they've been modified by
-    /// the sequencer
-    fn validate_sequenced_actions_signatures(
-        &self,
-        sequencer_actions: &[SequencerAction],
-        mls_state: Option<&MlsGroupState>,
-    ) -> Result<(), RoomError> {
-        for action in sequencer_actions {
-            let frame = match action {
-                SequencerAction::AcceptFrame { frame, .. } => frame,
-                SequencerAction::StoreFrame { frame, .. } => frame,
-                SequencerAction::BroadcastToRoom { frame, .. } => frame,
-                SequencerAction::RejectFrame { .. } => continue, // No signature validation needed
-            };
-
-            if let Some(opcode) = frame.header.opcode_enum() {
-                match opcode {
-                    Opcode::Commit | Opcode::Proposal | Opcode::Welcome => {
-                        continue; // No signature validation needed
-                    },
-                    _ => {
-                        // Validate signature for application messages
-                        // (epoch and membership already checked in validate_frame_basic)
-                        if let Some(state) = mls_state {
-                            let validation_result = MlsValidator::validate_signature(frame, state)?;
-
-                            if let ValidationResult::Reject { reason } = validation_result {
-                                return Err(RoomError::MlsValidation(MlsError::ValidationFailed(
-                                    reason,
-                                )));
-                            }
-                        }
-                    },
-                }
-            }
-        }
-
-        Ok(())
-    }
-}
-
-impl<E> RoomManager<E>
-where
-    E: Environment,
-{
+impl RoomManager {
     /// Create a new RoomManager
     pub fn new() -> Self {
-        Self { groups: HashMap::new(), sequencer: Sequencer::new(), room_metadata: HashMap::new() }
+        Self { sequencer: Sequencer::new(), room_metadata: HashMap::new() }
     }
 
     /// Check if a room exists
@@ -243,86 +120,33 @@ where
         self.room_metadata.contains_key(&room_id)
     }
 
-    /// Current MLS epoch for a room. `None` if room doesn't exist.
-    ///
-    /// Returns `None` if the room doesn't exist.
-    pub fn epoch(&self, room_id: u128) -> Option<u64> {
-        self.groups.get(&room_id).map(|g| g.epoch())
-    }
-
     /// Creates a room with the specified ID and records the creator for
     /// future authorization checks. Prevents duplicate room creation.
-    pub fn create_room(&mut self, room_id: u128, creator: u64, env: &E) -> Result<(), RoomError> {
+    ///
+    /// Note: The server does NOT create an MLS group - it just tracks metadata.
+    /// The server routes frames between clients; the clients own the MLS state.
+    pub fn create_room<E: Environment>(
+        &mut self,
+        room_id: u128,
+        creator: u64,
+        env: &E,
+    ) -> Result<(), RoomError> {
         if self.has_room(room_id) {
             return Err(RoomError::RoomAlreadyExists(room_id));
         }
 
-        // Create MLS group with Environment
-        // For server-side room creation, we use room_id as member_id (server is initial
-        // member)
-        let (group, _actions) =
-            MlsGroup::new(env.clone(), room_id, creator).map_err(RoomError::MlsValidation)?;
-        self.groups.insert(room_id, group);
-
-        // Store metadata (placeholder for future auth)
+        // Store metadata only - server doesn't participate in MLS
         let metadata = RoomMetadata { creator, created_at: env.now() };
         self.room_metadata.insert(room_id, metadata);
 
         Ok(())
     }
 
-    /// Add members to a room by their KeyPackages.
-    ///
-    /// Creates MLS commits and welcomes for adding new members.
-    /// The returned actions should be executed by the driver.
-    pub fn add_members(
-        &mut self,
-        room_id: u128,
-        key_packages: &[Vec<u8>],
-    ) -> Result<Vec<lockframe_core::mls::MlsAction>, RoomError> {
-        let group = self.groups.get_mut(&room_id).ok_or(RoomError::RoomNotFound(room_id))?;
-        let actions = group.add_members_from_bytes(key_packages)?;
-        Ok(actions)
-    }
-
-    /// Remove members from a room by their member IDs.
-    ///
-    /// Creates an MLS commit to remove the specified members.
-    /// The returned actions should be executed by the driver.
-    pub fn remove_members(
-        &mut self,
-        room_id: u128,
-        member_ids: &[u64],
-    ) -> Result<Vec<lockframe_core::mls::MlsAction>, RoomError> {
-        let group = self.groups.get_mut(&room_id).ok_or(RoomError::RoomNotFound(room_id))?;
-        let actions = group.remove_members(member_ids)?;
-        Ok(actions)
-    }
-
-    /// Leave a room voluntarily.
-    ///
-    /// Creates an MLS Remove proposal for self-removal. In MLS, members
-    /// cannot unilaterally remove themselves - another member must commit
-    /// the removal.
-    pub fn leave_room(
-        &mut self,
-        room_id: u128,
-    ) -> Result<Vec<lockframe_core::mls::MlsAction>, RoomError> {
-        let group = self.groups.get_mut(&room_id).ok_or(RoomError::RoomNotFound(room_id))?;
-        let actions = group.leave_group()?;
-        Ok(actions)
-    }
-
     /// Handle a sync request from a client.
     ///
     /// Loads frames from storage starting at `from_log_index` and returns
     /// a `SendSyncResponse` action for the driver to send back to the client.
-    ///
-    /// Client detects epoch mismatch or commit timeout, sends SyncRequest with
-    /// `from_log_index`, server loads frames from storage and sends
-    /// SyncResponse. Client processes frames in order to catch up. If
-    /// `has_more` is true, client sends another SyncRequest.
-    pub fn handle_sync_request(
+    pub fn handle_sync_request<E: Environment>(
         &self,
         room_id: u128,
         sender_id: u64,
@@ -333,8 +157,9 @@ where
     ) -> Result<RoomAction, RoomError> {
         let now = env.now();
 
-        let group = self.groups.get(&room_id).ok_or(RoomError::RoomNotFound(room_id))?;
-        let server_epoch = group.epoch();
+        if !self.has_room(room_id) {
+            return Err(RoomError::RoomNotFound(room_id));
+        }
 
         let frames = storage.load_frames(room_id, from_log_index, limit)?;
 
@@ -356,25 +181,17 @@ where
         };
         let has_more = latest_index.is_some_and(|latest| last_loaded_index < latest);
 
-        Ok(RoomAction::SendSyncResponse {
-            sender_id,
-            room_id,
-            frames: frame_bytes,
-            has_more,
-            server_epoch,
-            processed_at: now,
-        })
+        Ok(RoomAction::SendSyncResponse { sender_id, room_id, frames: frame_bytes, has_more, processed_at: now })
     }
 
-    /// Process a frame through MLS validation and sequencing
+    /// Process a frame through sequencing and routing.
     ///
-    /// This method orchestrates the full frame processing pipeline:
-    /// 1. Verify room exists (no lazy creation)
-    /// 2. Validate frame against MLS state
-    /// 3. Sequence the frame (assign log index)
-    /// 4. Convert SequencerAction to RoomAction
-    /// 5. Return actions for driver to execute
-    pub fn process_frame(
+    /// The server is a routing-only node - it does NOT participate in MLS.
+    /// Clients own the MLS group state; the server just:
+    /// 1. Verifies room exists (metadata check)
+    /// 2. Sequences frames (assigns log index)
+    /// 3. Routes frames to room subscribers
+    pub fn process_frame<E: Environment>(
         &mut self,
         frame: Frame,
         env: &E,
@@ -382,26 +199,17 @@ where
     ) -> Result<Vec<RoomAction>, RoomError> {
         let now = env.now();
 
-        // 1. Room must exist (no lazy creation)
+        // 1. Room must exist (check metadata)
         let room_id = frame.header.room_id();
-        let group = self.groups.get(&room_id).ok_or(RoomError::RoomNotFound(room_id))?;
+        if !self.has_room(room_id) {
+            return Err(RoomError::RoomNotFound(room_id));
+        }
 
-        // 2. Basic frame validation (epoch, membership) - NOT signature yet
-        let mls_state = storage.load_mls_state(room_id)?;
-        self.validate_frame_basic(&frame, &group, mls_state.as_ref())?;
-
-        // Check if this is a Commit before sequencing (we need the frame later)
-        let is_commit = frame.header.opcode_enum() == Some(Opcode::Commit);
-        let frame_for_mls = if is_commit { Some(frame.clone()) } else { None };
-
-        // 3. Sequence the frame (assign log index) - this modifies context_id
+        // 2. Sequence the frame (assign log index)
         let sequencer_actions = self.sequencer.process_frame(frame, storage)?;
 
-        // 4. NOW validate signatures on the sequenced frames
-        self.validate_sequenced_actions_signatures(&sequencer_actions, mls_state.as_ref())?;
-
-        // 5. Convert SequencerAction to RoomAction
-        let mut room_actions: Vec<RoomAction> = sequencer_actions
+        // 3. Convert SequencerAction to RoomAction
+        let room_actions: Vec<RoomAction> = sequencer_actions
             .into_iter()
             .map(|action| match action {
                 SequencerAction::AcceptFrame { room_id, log_index, frame } => {
@@ -426,44 +234,17 @@ where
             })
             .collect();
 
-        // 6. Update MLS state if this was a Commit
-        if frame_for_mls.is_some() {
-            let group = self.groups.get_mut(&room_id).ok_or(RoomError::RoomNotFound(room_id))?;
-
-            if group.has_mls_pending_commit() {
-                // We created this commit - merge our pending state
-                group.merge_pending_commit()?;
-            } else {
-                // MLS actions from peer commit are primarily logging (epoch advanced). These
-                // are handled via tracing. The critical outcome is that
-                // process_message() called merge_staged_commit() to advance our
-                // epoch
-                let commit_frame =
-                    frame_for_mls.as_ref().expect("invariant: frame_for_mls is Some");
-                let _mls_actions = group.process_message(commit_frame.clone())?;
-            }
-
-            let state = group.export_group_state()?;
-            room_actions.push(RoomAction::PersistMlsState { room_id, state, processed_at: now });
-        }
-
         Ok(room_actions)
     }
 }
 
-impl<E> Default for RoomManager<E>
-where
-    E: Environment,
-{
+impl Default for RoomManager {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<E> std::fmt::Debug for RoomManager<E>
-where
-    E: Environment,
-{
+impl std::fmt::Debug for RoomManager {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("RoomManager")
             .field("room_count", &self.room_metadata.len())

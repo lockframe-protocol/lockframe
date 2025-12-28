@@ -154,7 +154,12 @@ fn ping_pong_with_payload() {
         let (mut send, mut recv) = conn.into_split();
 
         // Create Hello payload
-        let hello = Payload::Hello(Hello { version: 1, capabilities: vec![], auth_token: None });
+        let hello = Payload::Hello(Hello {
+            version: 1,
+            capabilities: vec![],
+            sender_id: None,
+            auth_token: None,
+        });
 
         let hello_frame = hello.into_frame(FrameHeader::new(Opcode::Hello)).map_err(to_box_err)?;
 

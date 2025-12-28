@@ -204,7 +204,7 @@ fn create_frame_from_fuzzed(fuzzed: &FuzzedFrame) -> Frame {
     match &fuzzed.payload {
         FuzzedPayload::Hello { version } => {
             let hello =
-                Payload::Hello(Hello { version: *version, capabilities: vec![], auth_token: None });
+                Payload::Hello(Hello { version: *version, capabilities: vec![], sender_id: None, auth_token: None });
             hello
                 .into_frame(FrameHeader::new(Opcode::Hello))
                 .unwrap_or_else(|_| Frame::new(FrameHeader::new(Opcode::Hello), Vec::new()))

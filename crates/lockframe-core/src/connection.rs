@@ -115,6 +115,8 @@ where
     last_heartbeat: Option<I>,
     /// Session ID (assigned by server)
     session_id: Option<u64>,
+    /// Client's sender ID (from Hello frame, used for KeyPackage registry)
+    client_sender_id: Option<u64>,
 }
 
 impl<I> Connection<I>
@@ -129,6 +131,7 @@ where
             last_activity: now,
             last_heartbeat: None,
             session_id: None,
+            client_sender_id: None,
         }
     }
 
@@ -142,6 +145,14 @@ where
     #[must_use]
     pub fn session_id(&self) -> Option<u64> {
         self.session_id
+    }
+
+    /// Client's sender ID from Hello frame. `None` if not provided.
+    ///
+    /// Used for KeyPackage registry lookup. Falls back to session_id if not set.
+    #[must_use]
+    pub fn client_sender_id(&self) -> Option<u64> {
+        self.client_sender_id
     }
 
     /// Maximum time allowed for handshake completion.
@@ -177,7 +188,8 @@ where
         self.state = ConnectionState::Pending;
         self.last_activity = now;
 
-        let hello = Payload::Hello(Hello { version: 1, capabilities: vec![], auth_token: None });
+        let hello =
+            Payload::Hello(Hello { version: 1, capabilities: vec![], sender_id: None, auth_token: None });
         let frame = hello.into_frame(FrameHeader::new(Opcode::Hello))?;
 
         Ok(vec![ConnectionAction::SendFrame(frame)])
@@ -329,6 +341,9 @@ where
                         };
 
                         debug_assert_ne!(session_id, 0);
+
+                        // Store client's sender_id for KeyPackage registry
+                        self.client_sender_id = hello.sender_id;
 
                         self.state = ConnectionState::Authenticated;
 
@@ -565,7 +580,12 @@ mod tests {
         conn.set_session_id(0x1234_5678_9ABC_DEF0);
 
         // Create Hello frame
-        let hello = Payload::Hello(Hello { version: 1, capabilities: vec![], auth_token: None });
+        let hello = Payload::Hello(Hello {
+            version: 1,
+            capabilities: vec![],
+            sender_id: None,
+            auth_token: None,
+        });
         let hello_frame = hello.into_frame(FrameHeader::new(Opcode::Hello)).unwrap();
 
         // Handle Hello - should return HelloReply action
@@ -599,7 +619,12 @@ mod tests {
 
         // Don't set session ID - should fail
 
-        let hello = Payload::Hello(Hello { version: 1, capabilities: vec![], auth_token: None });
+        let hello = Payload::Hello(Hello {
+            version: 1,
+            capabilities: vec![],
+            sender_id: None,
+            auth_token: None,
+        });
         let hello_frame = hello.into_frame(FrameHeader::new(Opcode::Hello)).unwrap();
 
         let result = conn.handle_frame(&hello_frame, t0);
@@ -616,6 +641,7 @@ mod tests {
         let hello = Payload::Hello(Hello {
             version: 99, // Unsupported version
             capabilities: vec![],
+            sender_id: None,
             auth_token: None,
         });
         let hello_frame = hello.into_frame(FrameHeader::new(Opcode::Hello)).unwrap();
@@ -631,7 +657,7 @@ mod tests {
         let mut conn = Connection::new(t0, ConnectionConfig::default());
 
         // Create Hello message
-        let hello = Hello { version: 1, capabilities: vec![], auth_token: None };
+        let hello = Hello { version: 1, capabilities: vec![], sender_id: None, auth_token: None };
 
         // Call handle_hello() with Hello struct directly
         let actions = conn.handle_hello(&hello, &env, t0).unwrap();
@@ -664,7 +690,7 @@ mod tests {
         let t0 = env.now();
         let mut conn = Connection::new(t0, ConnectionConfig::default());
 
-        let hello = Hello { version: 99, capabilities: vec![], auth_token: None };
+        let hello = Hello { version: 99, capabilities: vec![], sender_id: None, auth_token: None };
 
         let result = conn.handle_hello(&hello, &env, t0);
         assert!(matches!(result, Err(ConnectionError::UnsupportedVersion(99))));
@@ -688,7 +714,7 @@ mod tests {
         assert_eq!(conn.state(), ConnectionState::Authenticated);
 
         // Now try to handle Hello in Authenticated state - should fail
-        let hello = Hello { version: 1, capabilities: vec![], auth_token: None };
+        let hello = Hello { version: 1, capabilities: vec![], sender_id: None, auth_token: None };
 
         let result = conn.handle_hello(&hello, &env, t0);
         assert!(matches!(result, Err(ConnectionError::InvalidState { .. })));

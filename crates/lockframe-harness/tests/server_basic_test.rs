@@ -75,7 +75,12 @@ fn server_handles_hello_handshake() {
         verify_connection_count(&server, 1, "after accept");
 
         // Create Hello frame for server to process
-        let hello = Payload::Hello(Hello { version: 1, capabilities: vec![], auth_token: None });
+        let hello = Payload::Hello(Hello {
+            version: 1,
+            capabilities: vec![],
+            sender_id: None,
+            auth_token: None,
+        });
 
         let frame = hello.into_frame(FrameHeader::new(Opcode::Hello))?;
 

@@ -331,12 +331,6 @@ async fn execute_actions(
                 }
             },
 
-            ServerAction::PersistMlsState { room_id, state } => {
-                if let Err(e) = driver.storage().store_mls_state(room_id, &state) {
-                    tracing::error!("Failed to persist MLS state: {}", e);
-                }
-            },
-
             ServerAction::Log { level, message, .. } => match level {
                 LogLevel::Debug => tracing::debug!("{}", message),
                 LogLevel::Info => tracing::info!("{}", message),

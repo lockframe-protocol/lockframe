@@ -29,7 +29,8 @@ fn frame_to_hex(frame: &Frame) -> String {
 
 #[test]
 fn snapshot_hello_frame() {
-    let hello = Payload::Hello(Hello { version: 1, capabilities: vec![], auth_token: None });
+    let hello =
+        Payload::Hello(Hello { version: 1, capabilities: vec![], sender_id: None, auth_token: None });
 
     let frame =
         hello.into_frame(FrameHeader::new(Opcode::Hello)).expect("frame creation should succeed");
@@ -42,6 +43,7 @@ fn snapshot_hello_frame_with_capabilities() {
     let hello = Payload::Hello(Hello {
         version: 1,
         capabilities: vec!["mls".to_string(), "e2ee".to_string()],
+        sender_id: None,
         auth_token: None,
     });
 
@@ -56,6 +58,7 @@ fn snapshot_hello_frame_with_auth_token() {
     let hello = Payload::Hello(Hello {
         version: 1,
         capabilities: vec![],
+        sender_id: None,
         auth_token: Some(vec![0xde, 0xad, 0xbe, 0xef]),
     });
 

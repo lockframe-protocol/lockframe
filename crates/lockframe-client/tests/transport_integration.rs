@@ -15,7 +15,7 @@ use tokio::time::timeout;
 
 /// Create a proper Hello frame with payload.
 fn make_hello_frame() -> Frame {
-    let hello = Hello { version: 1, capabilities: vec![], auth_token: None };
+    let hello = Hello { version: 1, capabilities: vec![], sender_id: None, auth_token: None };
     let payload = Payload::Hello(hello);
     payload.into_frame(FrameHeader::new(Opcode::Hello)).unwrap()
 }

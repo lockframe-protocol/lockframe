@@ -8,7 +8,6 @@ use std::{collections::HashMap, time::Instant};
 use lockframe_core::{
     connection::{Connection, ConnectionAction, ConnectionConfig},
     env::Environment,
-    mls::MlsGroupState,
 };
 use lockframe_proto::{
     Frame, FrameHeader, Opcode, Payload,
@@ -110,14 +109,6 @@ pub enum ServerAction {
         frame: Frame,
     },
 
-    /// Persist updated MLS state
-    PersistMlsState {
-        /// Room the state belongs to
-        room_id: u128,
-        /// Updated MLS state
-        state: MlsGroupState,
-    },
-
     /// Log a message (for debugging/monitoring)
     Log {
         /// Log level
@@ -154,8 +145,8 @@ where
     connections: HashMap<u64, Connection>,
     /// Session/room registry
     pub(crate) registry: ConnectionRegistry,
-    /// Room manager (MLS validation + sequencing)
-    room_manager: RoomManager<E>,
+    /// Room manager (routing + sequencing)
+    room_manager: RoomManager,
     /// KeyPackage registry for publish/fetch operations
     key_package_registry: KeyPackageRegistry,
     /// Storage backend
@@ -266,13 +257,10 @@ where
                 }
 
                 if opcode == Some(Opcode::Hello) {
-                    if let Some(_) = self.registry.sessions(session_id) {
-                        // TODO: Extract actual user_id from auth_token when authentication is
-                        // implemented For now, use session_id as temporary user_id.
-                        let user_id = session_id;
-
-                        let new_info = SessionInfo::authenticated(user_id);
-                        self.registry.update_session_info(session_id, new_info);
+                    if let Some(info) = self.registry.sessions_mut(session_id) {
+                        info.authenticated = true;
+                        // Prefer client's sender_id (from Hello) for KeyPackage registry
+                        info.user_id = conn.client_sender_id().or(conn.session_id());
                     }
                 }
             },
@@ -333,6 +321,14 @@ where
             _ => {
                 // Room-level frames (Commit, Proposal, AppMessage, etc.)
                 conn.update_activity(now);
+                let room_id = frame.header.room_id();
+
+                // Auto-create room on first Commit (epoch 0)
+                if opcode == Some(Opcode::Commit) && !self.room_manager.has_room(room_id) {
+                    let create_actions = self.create_room(room_id, session_id)?;
+                    actions.extend(create_actions);
+                }
+
                 let room_actions =
                     self.room_manager.process_frame(frame, &self.env, &self.storage)?;
 
@@ -389,9 +385,6 @@ where
                 },
                 crate::room_manager::RoomError::Storage(e) => {
                     ErrorPayload::storage_error(e.to_string())
-                },
-                crate::room_manager::RoomError::MlsValidation(e) => {
-                    ErrorPayload::mls_error(e.to_string())
                 },
                 crate::room_manager::RoomError::Sequencing(e) => {
                     ErrorPayload::sequencer_error(e.to_string())
@@ -743,10 +736,6 @@ where
                 vec![ServerAction::PersistFrame { room_id, log_index, frame }]
             },
 
-            RoomAction::PersistMlsState { room_id, state, .. } => {
-                vec![ServerAction::PersistMlsState { room_id, state }]
-            },
-
             RoomAction::Reject { sender_id, reason, processed_at } => {
                 let error = Payload::Error(ErrorPayload::frame_rejected(&reason));
                 match error.into_frame(FrameHeader::new(Opcode::Error)) {
@@ -766,16 +755,10 @@ where
                 }
             },
 
-            RoomAction::SendSyncResponse {
-                sender_id,
-                room_id,
-                frames,
-                has_more,
-                server_epoch,
-                ..
-            } => {
+            RoomAction::SendSyncResponse { sender_id, room_id, frames, has_more, .. } => {
+                // Server doesn't track epoch - set to 0, clients determine epoch from frames
                 let response =
-                    Payload::SyncResponse(SyncResponse { frames, has_more, server_epoch });
+                    Payload::SyncResponse(SyncResponse { frames, has_more, server_epoch: 0 });
 
                 match response.into_frame(FrameHeader::new(Opcode::SyncResponse)) {
                     Ok(mut frame) => {
@@ -846,9 +829,13 @@ where
         self.room_manager.has_room(room_id)
     }
 
-    /// Current MLS epoch for a room. `None` if room doesn't exist.
-    pub fn room_epoch(&self, room_id: u128) -> Option<u64> {
-        self.room_manager.epoch(room_id)
+    /// Current MLS epoch for a room.
+    ///
+    /// Returns `None` - server is routing-only and doesn't track MLS epoch.
+    /// Clients own their MLS state and track epochs.
+    #[allow(clippy::unused_self)]
+    pub fn room_epoch(&self, _room_id: u128) -> Option<u64> {
+        None
     }
 
     /// Storage backend for frame/state persistence.

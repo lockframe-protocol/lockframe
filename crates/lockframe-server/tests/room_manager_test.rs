@@ -1,11 +1,12 @@
 //! Room Manager tests
+//!
+//! Tests for the routing-only server RoomManager.
+//! The server does NOT participate in MLS - it just routes frames between clients.
 
-use std::{collections::HashMap, time::Duration};
+use std::time::Duration;
 
-// Generate signature key for the creator
 use bytes::Bytes;
-use ed25519_dalek::{Signer, SigningKey};
-use lockframe_core::{env::Environment, mls::MlsGroupState};
+use lockframe_core::env::Environment;
 use lockframe_proto::{Frame, FrameHeader, Opcode};
 use lockframe_server::{MemoryStorage, RoomAction, RoomError, RoomManager, Storage};
 
@@ -32,7 +33,7 @@ impl Environment for TestEnv {
 
 #[test]
 fn room_manager_new_has_no_rooms() {
-    let manager = RoomManager::<TestEnv>::new();
+    let manager = RoomManager::new();
     assert!(!manager.has_room(0x1234));
 }
 
@@ -97,7 +98,7 @@ fn create_multiple_rooms() {
 #[test]
 fn process_frame_rejects_unknown_room() {
     let env = TestEnv;
-    let mut manager = RoomManager::<TestEnv>::new();
+    let mut manager = RoomManager::new();
     let storage = MemoryStorage::new();
 
     // Create a frame for a room that doesn't exist
@@ -177,8 +178,10 @@ fn process_frame_returns_correct_action_types() {
     assert!(matches!(actions[2], RoomAction::Broadcast { .. }));
 }
 
+/// Test that the server routes frames without MLS validation.
+/// Server is routing-only - clients own the MLS state.
 #[test]
-fn process_frame_rejects_wrong_epoch() {
+fn process_frame_routes_any_epoch() {
     let env = TestEnv;
     let mut manager = RoomManager::new();
     let storage = MemoryStorage::new();
@@ -186,167 +189,20 @@ fn process_frame_rejects_wrong_epoch() {
     let room_id = 0x1234_5678_90ab_cdef_1234_5678_90ab_cdef;
     let creator = 42;
 
-    // Create room (epoch 0)
+    // Create room
     manager.create_room(room_id, creator, &env).unwrap();
 
-    // Store initial MLS state at epoch 0 with signature keys
-    let signing_key = SigningKey::generate(&mut rand::thread_rng());
-    let verifying_key = signing_key.verifying_key();
-    let mut member_keys = HashMap::new();
-    member_keys.insert(creator, verifying_key.to_bytes());
+    // Server is routing-only, should accept any epoch
+    for epoch in [0, 1, 5, 100] {
+        let mut header = FrameHeader::new(Opcode::AppMessage);
+        header.set_room_id(room_id);
+        header.set_sender_id(creator);
+        header.set_epoch(epoch);
+        let frame = Frame::new(header, Bytes::from(format!("msg at epoch {epoch}")));
 
-    let mls_state =
-        MlsGroupState::with_keys(room_id, 0, [0u8; 32], vec![creator], member_keys, vec![]);
-    storage.store_mls_state(room_id, &mls_state).unwrap();
-
-    // Create frame with wrong epoch (epoch 5, but room is at epoch 0)
-    let mut header = FrameHeader::new(Opcode::AppMessage);
-    header.set_room_id(room_id);
-    header.set_sender_id(creator);
-    header.set_epoch(5); // Wrong epoch!
-
-    // Create and sign the frame properly
-    let frame = Frame::new(header, Bytes::new());
-    let signing_data = frame.header.signing_data();
-    let signature = signing_key.sign(&signing_data);
-
-    let mut signed_header = frame.header;
-    signed_header.set_signature(signature.to_bytes());
-    let frame = Frame::new(signed_header, frame.payload.clone());
-
-    let result = manager.process_frame(frame, &env, &storage);
-    assert!(matches!(result, Err(RoomError::InvalidEpoch { expected: 0, actual: 5 })));
-}
-
-/// Test that RoomManager advances epoch after processing a Commit.
-///
-/// This test exposes a critical wiring bug: RoomManager validates frames
-/// against MLS state but never updates the MLS state when processing commits.
-/// After a commit advances the epoch, subsequent frames at the new epoch
-/// should be accepted.
-#[test]
-fn process_commit_advances_epoch() {
-    let env = TestEnv;
-    let mut manager = RoomManager::new();
-    let storage = MemoryStorage::new();
-
-    let room_id = 0x1234_5678_90ab_cdef_1234_5678_90ab_cdef;
-    let creator = 42;
-
-    // Step 1: Create room (epoch 0)
-    manager.create_room(room_id, creator, &env).unwrap();
-    assert_eq!(manager.epoch(room_id), Some(0), "Room should start at epoch 0");
-
-    // Step 2: Store initial MLS state for validation
-    let signing_key = SigningKey::generate(&mut rand::thread_rng());
-    let verifying_key = signing_key.verifying_key();
-    let mut member_keys = HashMap::new();
-    member_keys.insert(creator, verifying_key.to_bytes());
-
-    let mls_state =
-        MlsGroupState::with_keys(room_id, 0, [0u8; 32], vec![creator], member_keys, vec![]);
-    storage.store_mls_state(room_id, &mls_state).unwrap();
-
-    // Step 3: Generate a KeyPackage for a new member
-    use lockframe_core::mls::MlsGroup;
-    let new_member_id = 100u64;
-    let (key_package_bytes, _hash, _pending_state) =
-        MlsGroup::generate_key_package(env.clone(), new_member_id).expect("generate key package");
-
-    // Step 4: Add member - creates a Commit and pending state
-    use lockframe_core::mls::MlsAction;
-    let add_actions =
-        manager.add_members(room_id, &[key_package_bytes]).expect("add_members should succeed");
-
-    // Epoch should still be 0 (commit not merged yet)
-    assert_eq!(manager.epoch(room_id), Some(0), "Epoch should be 0 before commit processed");
-
-    // Find the Commit frame from the actions
-    let commit_frame = add_actions
-        .iter()
-        .find_map(|a| match a {
-            MlsAction::SendCommit(frame) => Some(frame.clone()),
-            _ => None,
-        })
-        .expect("add_members should produce a Commit frame");
-
-    // Step 5: Process the commit through RoomManager (as if returned by sequencer)
-    let mut header = commit_frame.header.clone();
-    header.set_room_id(room_id);
-    header.set_sender_id(creator);
-    header.set_epoch(0); // Commit is sent at current epoch
-
-    // Create the frame first so payload_size is set correctly
-    let commit_frame = Frame::new(header, commit_frame.payload);
-
-    // Sign the frame header (application messages require signature validation)
-    // Use the centralized signing data method to get the bytes that should be
-    // signed
-    let signing_data = commit_frame.header.signing_data();
-    let signature = signing_key.sign(&signing_data);
-
-    let mut signed_header = commit_frame.header;
-    signed_header.set_signature(signature.to_bytes());
-    let commit_frame = Frame::new(signed_header, commit_frame.payload.clone());
-
-    let result = manager.process_frame(commit_frame, &env, &storage);
-    if let Err(ref e) = result {
-        println!("process_frame failed with error: {:?}", e);
+        let result = manager.process_frame(frame, &env, &storage);
+        assert!(result.is_ok(), "Server should route frame at epoch {epoch}");
     }
-    assert!(result.is_ok(), "process_frame should succeed");
-
-    // CRITICAL ORACLE: Epoch should advance to 1 after processing the commit
-    assert_eq!(
-        manager.epoch(room_id),
-        Some(1),
-        "Epoch should advance to 1 after processing Commit"
-    );
-
-    // Step 6: Update MLS state in storage to reflect new epoch
-    // Generate signature key for the new member
-    let new_signing_key = SigningKey::generate(&mut rand::thread_rng());
-    let new_verifying_key = new_signing_key.verifying_key();
-    let mut updated_member_keys = HashMap::new();
-    updated_member_keys.insert(creator, verifying_key.to_bytes());
-    updated_member_keys.insert(new_member_id, new_verifying_key.to_bytes());
-
-    let mls_state = MlsGroupState::with_keys(
-        room_id,
-        1,
-        [0u8; 32],
-        vec![creator, new_member_id],
-        updated_member_keys,
-        vec![],
-    );
-    storage.store_mls_state(room_id, &mls_state).unwrap();
-
-    // Step 7: Send a message at epoch 1 - should be accepted
-    let mut header = FrameHeader::new(Opcode::AppMessage);
-    header.set_room_id(room_id);
-    header.set_sender_id(creator);
-    header.set_epoch(1); // New epoch after commit
-
-    // Create the frame first so payload_size is set correctly
-    let msg_frame = Frame::new(header, Bytes::from("message at epoch 1"));
-
-    // Sign the frame header (application messages require signature validation)
-    // Use the centralized signing data method to get the bytes that should be
-    // signed
-    let signing_data = msg_frame.header.signing_data();
-    let signature = signing_key.sign(&signing_data);
-
-    let mut signed_header = msg_frame.header;
-    signed_header.set_signature(signature.to_bytes());
-    let msg_frame = Frame::new(signed_header, msg_frame.payload.clone());
-
-    let result = manager.process_frame(msg_frame, &env, &storage);
-
-    // ORACLE: Message at epoch 1 should be accepted
-    assert!(
-        result.is_ok(),
-        "Message at epoch 1 should be accepted after commit. Error: {:?}",
-        result.err()
-    );
 }
 
 /// Test that handle_sync_request loads frames from storage and returns them.
@@ -380,19 +236,11 @@ fn handle_sync_request_returns_stored_frames() {
 
     let action = result.unwrap();
     match action {
-        RoomAction::SendSyncResponse {
-            sender_id,
-            room_id: rid,
-            frames,
-            has_more,
-            server_epoch,
-            ..
-        } => {
+        RoomAction::SendSyncResponse { sender_id, room_id: rid, frames, has_more, .. } => {
             assert_eq!(sender_id, requester);
             assert_eq!(rid, room_id);
             assert_eq!(frames.len(), 5);
             assert!(!has_more);
-            assert_eq!(server_epoch, 0);
         },
         _ => panic!("Expected SendSyncResponse action"),
     }
@@ -453,7 +301,7 @@ fn handle_sync_request_paginates_with_limit() {
 #[test]
 fn handle_sync_request_unknown_room_fails() {
     let env = TestEnv;
-    let manager = RoomManager::<TestEnv>::new();
+    let manager = RoomManager::new();
     let storage = MemoryStorage::new();
 
     let result = manager.handle_sync_request(
@@ -466,4 +314,56 @@ fn handle_sync_request_unknown_room_fails() {
     );
 
     assert!(matches!(result, Err(RoomError::RoomNotFound(_))));
+}
+
+/// Test that server routes Commit frames like any other frame.
+/// Server doesn't process MLS commits - it just routes them.
+#[test]
+fn process_commit_routes_without_mls_validation() {
+    let env = TestEnv;
+    let mut manager = RoomManager::new();
+    let storage = MemoryStorage::new();
+
+    let room_id = 0x1234_5678_90ab_cdef_1234_5678_90ab_cdef;
+    let creator = 42;
+
+    // Create room
+    manager.create_room(room_id, creator, &env).unwrap();
+
+    // Create a Commit frame (server just routes it)
+    let mut header = FrameHeader::new(Opcode::Commit);
+    header.set_room_id(room_id);
+    header.set_sender_id(creator);
+    header.set_epoch(0);
+    let frame = Frame::new(header, Bytes::from("commit payload"));
+
+    let result = manager.process_frame(frame, &env, &storage);
+    assert!(result.is_ok(), "Server should route Commit frame");
+
+    let actions = result.unwrap();
+    assert!(!actions.is_empty(), "Should produce routing actions");
+}
+
+/// Test that server routes Welcome frames to recipients.
+#[test]
+fn process_welcome_routes_without_mls_validation() {
+    let env = TestEnv;
+    let mut manager = RoomManager::new();
+    let storage = MemoryStorage::new();
+
+    let room_id = 0x1234_5678_90ab_cdef_1234_5678_90ab_cdef;
+    let creator = 42;
+
+    // Create room
+    manager.create_room(room_id, creator, &env).unwrap();
+
+    // Create a Welcome frame (server just routes it)
+    let mut header = FrameHeader::new(Opcode::Welcome);
+    header.set_room_id(room_id);
+    header.set_sender_id(creator);
+    header.set_epoch(0);
+    let frame = Frame::new(header, Bytes::from("welcome payload"));
+
+    let result = manager.process_frame(frame, &env, &storage);
+    assert!(result.is_ok(), "Server should route Welcome frame");
 }

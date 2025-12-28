@@ -406,6 +406,7 @@ fn prop_session_id_deterministic_with_same_env() {
         let hello = Hello {
             version: 1,
             capabilities: vec![],
+            sender_id: None,
             auth_token: None,
         };
 

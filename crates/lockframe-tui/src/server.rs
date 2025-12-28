@@ -108,7 +108,6 @@ async fn execute_action(
 
         ServerAction::CloseConnection { .. }
         | ServerAction::PersistFrame { .. }
-        | ServerAction::PersistMlsState { .. }
         | ServerAction::Log { .. } => {},
     }
 

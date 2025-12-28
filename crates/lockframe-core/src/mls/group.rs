@@ -417,7 +417,10 @@ impl<E: Environment> MlsGroup<E> {
             .tls_serialize_detached()
             .map_err(|e| MlsError::Serialization(format!("Failed to serialize message: {}", e)))?;
 
-        let frame = Frame { header: FrameHeader::new(Opcode::AppMessage), payload: payload.into() };
+        let mut header = FrameHeader::new(Opcode::AppMessage);
+        header.set_room_id(self.room_id);
+        header.set_sender_id(self.member_id);
+        let frame = Frame::new(header, payload);
 
         Ok(vec![MlsAction::SendMessage(frame)])
     }
@@ -663,8 +666,10 @@ impl<E: Environment> MlsGroup<E> {
             .tls_serialize_detached()
             .map_err(|e| MlsError::Serialization(format!("Failed to serialize commit: {}", e)))?;
 
-        let commit_frame =
-            Frame { header: FrameHeader::new(Opcode::Commit), payload: commit_payload.into() };
+        let mut commit_header = FrameHeader::new(Opcode::Commit);
+        commit_header.set_room_id(self.room_id);
+        commit_header.set_sender_id(self.member_id);
+        let commit_frame = Frame::new(commit_header, commit_payload);
 
         actions.push(MlsAction::SendCommit(commit_frame));
 
@@ -678,7 +683,7 @@ impl<E: Environment> MlsGroup<E> {
             header.set_recipient_id(recipient);
             header.set_room_id(self.room_id);
             header.set_sender_id(self.member_id);
-            let frame = Frame { header, payload: welcome_payload.clone().into() };
+            let frame = Frame::new(header, welcome_payload.clone());
             actions.push(MlsAction::SendWelcome { recipient, frame });
         }
 
@@ -723,8 +728,10 @@ impl<E: Environment> MlsGroup<E> {
             .tls_serialize_detached()
             .map_err(|e| MlsError::Serialization(format!("Failed to serialize commit: {}", e)))?;
 
-        let commit_frame =
-            Frame { header: FrameHeader::new(Opcode::Commit), payload: commit_payload.into() };
+        let mut commit_header = FrameHeader::new(Opcode::Commit);
+        commit_header.set_room_id(self.room_id);
+        commit_header.set_sender_id(self.member_id);
+        let commit_frame = Frame::new(commit_header, commit_payload);
 
         actions.push(MlsAction::SendCommit(commit_frame));
 
@@ -756,8 +763,10 @@ impl<E: Environment> MlsGroup<E> {
             .tls_serialize_detached()
             .map_err(|e| MlsError::Serialization(format!("Failed to serialize proposal: {}", e)))?;
 
-        let proposal_frame =
-            Frame { header: FrameHeader::new(Opcode::Proposal), payload: proposal_payload.into() };
+        let mut proposal_header = FrameHeader::new(Opcode::Proposal);
+        proposal_header.set_room_id(self.room_id);
+        proposal_header.set_sender_id(self.member_id);
+        let proposal_frame = Frame::new(proposal_header, proposal_payload);
 
         actions.push(MlsAction::SendProposal(proposal_frame));
 

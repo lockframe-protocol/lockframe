@@ -369,7 +369,13 @@ impl Runtime {
 
     /// Send Hello frame to authenticate with the server.
     async fn send_hello(&mut self) -> Result<(), RuntimeError> {
-        let hello = Hello { version: 1, capabilities: Vec::new(), auth_token: None };
+        let sender_id = self.bridge.sender_id();
+        let hello = Hello {
+            version: 1,
+            capabilities: Vec::new(),
+            sender_id: Some(sender_id),
+            auth_token: None,
+        };
 
         let frame = match Payload::Hello(hello).into_frame(FrameHeader::new(Opcode::Hello)) {
             Ok(frame) => frame,

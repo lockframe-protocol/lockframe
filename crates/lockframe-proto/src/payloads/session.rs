@@ -29,6 +29,9 @@ pub struct Hello {
     pub version: u8,
     /// Client capabilities (future use)
     pub capabilities: Vec<String>,
+    /// Client's sender ID (used for KeyPackage registry lookup)
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub sender_id: Option<u64>,
     /// Authentication token (optional)
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub auth_token: Option<Vec<u8>>,
@@ -39,6 +42,7 @@ impl std::fmt::Debug for Hello {
         f.debug_struct("Hello")
             .field("version", &self.version)
             .field("capabilities", &self.capabilities)
+            .field("sender_id", &self.sender_id)
             .field(
                 "auth_token",
                 &self.auth_token.as_ref().map(|token| format!("<redacted {} bytes>", token.len())),
@@ -155,7 +159,8 @@ mod tests {
 
     #[test]
     fn hello_serde() {
-        let hello = Hello { version: 1, capabilities: vec!["mls".to_string()], auth_token: None };
+        let hello =
+            Hello { version: 1, capabilities: vec!["mls".to_string()], sender_id: None, auth_token: None };
 
         let cbor = ciborium::ser::into_writer(&hello, Vec::new());
         assert!(cbor.is_ok());
