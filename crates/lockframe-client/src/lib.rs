@@ -21,7 +21,10 @@
 //!
 //! With the `transport` feature enabled, this crate also provides:
 //! - [`transport::ConnectedClient`]: Client with QUIC transport
-//! - [`transport::connect`]: Connect to a server
+//! - [`transport::connect`]: Connect to a server (development mode)
+//! - [`transport::connect_with_config`]: Connect with custom TLS configuration
+//! - [`transport::TlsMode`]: Secure or insecure TLS verification
+//! - [`transport::TransportConfig`]: Transport configuration options
 
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]

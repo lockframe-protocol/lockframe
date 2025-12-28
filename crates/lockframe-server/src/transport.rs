@@ -21,6 +21,7 @@
 
 use std::{net::SocketAddr, sync::Arc};
 
+use lockframe_proto::ALPN_PROTOCOL;
 use quinn::{Endpoint, RecvStream, SendStream, ServerConfig};
 
 use crate::error::ServerError;
@@ -166,7 +167,7 @@ fn load_tls_config(cert_path: &str, key_path: &str) -> Result<ServerConfig, Serv
         .with_single_cert(certs, key)
         .map_err(|e| ServerError::Config(format!("invalid TLS config: {}", e)))?;
 
-    tls_config.alpn_protocols = vec![b"lockframe".to_vec()];
+    tls_config.alpn_protocols = vec![ALPN_PROTOCOL.to_vec()];
 
     let server_config = ServerConfig::with_crypto(Arc::new(
         quinn::crypto::rustls::QuicServerConfig::try_from(tls_config)
@@ -192,7 +193,7 @@ fn generate_self_signed_config() -> Result<ServerConfig, ServerError> {
         .with_single_cert(cert_chain, key.into())
         .map_err(|e| ServerError::Config(format!("invalid TLS config: {}", e)))?;
 
-    tls_config.alpn_protocols = vec![b"lockframe".to_vec()];
+    tls_config.alpn_protocols = vec![ALPN_PROTOCOL.to_vec()];
 
     let server_config = ServerConfig::with_crypto(Arc::new(
         quinn::crypto::rustls::QuicServerConfig::try_from(tls_config)

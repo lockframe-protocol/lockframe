@@ -3,15 +3,62 @@
 //! Provides [`ConnectedClient`] which handles QUIC I/O for frame transport.
 //! This is a thin layer that just sends/receives frames - protocol logic
 //! remains in the Sans-IO [`Client`].
+//!
+//! # TLS Modes
+//!
+//! - Secure (default): Verifies server certificates against system roots. Use
+//!   this for production deployments with CA-signed certificates.
+//! - Insecure: Accepts any certificate without verification. Use this only for
+//!   development with self-signed certificates.
 
 use std::{net::SocketAddr, sync::Arc};
 
 use bytes::BytesMut;
-use lockframe_proto::{Frame, FrameHeader};
+use lockframe_proto::{ALPN_PROTOCOL, Frame, FrameHeader};
 use quinn::{ClientConfig, Endpoint, RecvStream, SendStream};
 use thiserror::Error;
 use tokio::sync::mpsc;
 use zerocopy::FromBytes;
+
+const TRANSPORT_IDLE_TIMEOUT: u64 = 30; // seconds
+
+/// TLS verification mode for client connections.
+#[derive(Debug, Clone, Copy, Default)]
+pub enum TlsMode {
+    /// Verify server certificate against system roots (production).
+    #[default]
+    Secure,
+    /// Accept any certificate without verification (development only).
+    Insecure,
+}
+
+/// Configuration for client transport.
+#[derive(Debug, Clone)]
+pub struct TransportConfig {
+    /// TLS verification mode.
+    pub tls_mode: TlsMode,
+    /// Server name for TLS SNI (Server Name Indication).
+    /// Defaults to "localhost".
+    pub server_name: String,
+}
+
+impl Default for TransportConfig {
+    fn default() -> Self {
+        Self { tls_mode: TlsMode::default(), server_name: "localhost".to_string() }
+    }
+}
+
+impl TransportConfig {
+    /// Create config for development (insecure TLS).
+    pub fn development() -> Self {
+        Self { tls_mode: TlsMode::Insecure, server_name: "localhost".to_string() }
+    }
+
+    /// Create config for production with server name.
+    pub fn production(server_name: impl Into<String>) -> Self {
+        Self { tls_mode: TlsMode::Secure, server_name: server_name.into() }
+    }
+}
 
 /// Transport errors.
 #[derive(Debug, Error)]
@@ -49,23 +96,38 @@ impl ConnectedClient {
     }
 }
 
-/// Connect to a Lockframe server via QUIC.
+/// Connect to a Lockframe server via QUIC with default config.
 ///
-/// Returns a [`ConnectedClient`] with channels for frame transport.
+/// Uses development mode (insecure TLS) for backwards compatibility.
+/// For production, use [`connect_with_config`] with secure TLS.
 pub async fn connect(server_addr: &str) -> Result<ConnectedClient, TransportError> {
+    connect_with_config(server_addr, TransportConfig::development()).await
+}
+
+/// Connect to a Lockframe server via QUIC with custom config.
+///
+/// # TLS Modes
+///
+/// - `TlsMode::Secure`: Verifies server certificate against system roots.
+/// - `TlsMode::Insecure`: Accepts any certificate (development only).
+pub async fn connect_with_config(
+    server_addr: &str,
+    config: TransportConfig,
+) -> Result<ConnectedClient, TransportError> {
     let addr: SocketAddr = server_addr
         .parse()
         .map_err(|e| TransportError::Connection(format!("invalid address: {e}")))?;
 
-    // Create client endpoint
-    let client_config = insecure_client_config();
+    let client_config = match config.tls_mode {
+        TlsMode::Secure => secure_client_config()?,
+        TlsMode::Insecure => insecure_client_config(),
+    };
     let mut endpoint = Endpoint::client("0.0.0.0:0".parse().unwrap())
         .map_err(|e| TransportError::Connection(format!("endpoint creation failed: {e}")))?;
     endpoint.set_default_client_config(client_config);
 
-    // Connect to server
     let connection = endpoint
-        .connect(addr, "localhost")
+        .connect(addr, &config.server_name)
         .map_err(|e| TransportError::Connection(format!("connect failed: {e}")))?
         .await
         .map_err(|e| TransportError::Connection(format!("connection failed: {e}")))?;
@@ -73,7 +135,6 @@ pub async fn connect(server_addr: &str) -> Result<ConnectedClient, TransportErro
     let (to_server_tx, to_server_rx) = mpsc::channel::<Frame>(32);
     let (from_server_tx, from_server_rx) = mpsc::channel::<Frame>(32);
 
-    // Spawn connection handler
     let handle = tokio::spawn(run_connection(connection, to_server_rx, from_server_tx));
 
     Ok(ConnectedClient {
@@ -89,7 +150,7 @@ async fn run_connection(
     mut to_server: mpsc::Receiver<Frame>,
     from_server: mpsc::Sender<Frame>,
 ) {
-    // Spawn receiver task for incoming unidirectional streams
+    // Incoming: Unidirectional streams
     let conn_recv = connection.clone();
     let from_server_clone = from_server.clone();
     let recv_handle = tokio::spawn(async move {
@@ -108,7 +169,7 @@ async fn run_connection(
         }
     });
 
-    // Main loop: send outgoing frames
+    // Outgoing: Send frames
     while let Some(frame) = to_server.recv().await {
         if let Ok((send, _recv)) = connection.open_bi().await {
             if let Err(e) = send_frame(send, &frame).await {
@@ -127,7 +188,6 @@ async fn handle_incoming_stream(
 ) -> Result<(), TransportError> {
     let mut buf = BytesMut::with_capacity(65536);
 
-    // Read header
     buf.resize(FrameHeader::SIZE, 0);
     recv.read_exact(&mut buf[..FrameHeader::SIZE])
         .await
@@ -138,7 +198,6 @@ async fn handle_incoming_stream(
 
     let payload_size = header.payload_size() as usize;
 
-    // Read payload if present
     if payload_size > 0 {
         buf.resize(FrameHeader::SIZE + payload_size, 0);
         recv.read_exact(&mut buf[FrameHeader::SIZE..])
@@ -162,23 +221,45 @@ async fn send_frame(mut send: SendStream, frame: &Frame) -> Result<(), Transport
     frame.encode(&mut buf).map_err(|e| TransportError::Protocol(format!("encode failed: {e}")))?;
 
     send.write_all(&buf).await.map_err(|e| TransportError::Stream(format!("write failed: {e}")))?;
-
     send.finish().map_err(|e| TransportError::Stream(format!("finish failed: {e}")))?;
 
     Ok(())
 }
 
+/// Create a secure client config that verifies certificates against system
+/// roots.
+fn secure_client_config() -> Result<ClientConfig, TransportError> {
+    let roots = rustls::RootCertStore::from_iter(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+
+    let mut crypto =
+        rustls::ClientConfig::builder().with_root_certificates(roots).with_no_client_auth();
+
+    crypto.alpn_protocols = vec![ALPN_PROTOCOL.to_vec()];
+
+    let mut config = ClientConfig::new(Arc::new(
+        quinn::crypto::rustls::QuicClientConfig::try_from(crypto)
+            .map_err(|e| TransportError::Connection(format!("TLS config error: {e}")))?,
+    ));
+
+    let mut transport = quinn::TransportConfig::default();
+    transport.max_idle_timeout(Some(
+        std::time::Duration::from_secs(TRANSPORT_IDLE_TIMEOUT).try_into().unwrap(),
+    ));
+    config.transport_config(Arc::new(transport));
+
+    Ok(config)
+}
+
 /// Create an insecure client config that accepts any certificate.
 ///
-/// WARNING: Development only. Production should verify certificates.
+/// WARNING: Development only. Production should use [`secure_client_config`].
 fn insecure_client_config() -> ClientConfig {
     let mut crypto = rustls::ClientConfig::builder()
         .dangerous()
         .with_custom_certificate_verifier(Arc::new(InsecureCertVerifier))
         .with_no_client_auth();
 
-    // Must match server's ALPN protocol
-    crypto.alpn_protocols = vec![b"lockframe".to_vec()];
+    crypto.alpn_protocols = vec![ALPN_PROTOCOL.to_vec()];
 
     let mut config = ClientConfig::new(Arc::new(
         quinn::crypto::rustls::QuicClientConfig::try_from(crypto)
@@ -186,7 +267,9 @@ fn insecure_client_config() -> ClientConfig {
     ));
 
     let mut transport = quinn::TransportConfig::default();
-    transport.max_idle_timeout(Some(std::time::Duration::from_secs(30).try_into().unwrap()));
+    transport.max_idle_timeout(Some(
+        std::time::Duration::from_secs(TRANSPORT_IDLE_TIMEOUT).try_into().unwrap(),
+    ));
     config.transport_config(Arc::new(transport));
 
     config

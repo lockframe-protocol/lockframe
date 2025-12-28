@@ -30,3 +30,9 @@ pub use frame::Frame;
 pub use header::FrameHeader;
 pub use opcodes::Opcode;
 pub use payloads::Payload;
+
+/// ALPN protocol identifier for TLS negotiation.
+///
+/// Both server and client must use the same ALPN string. This ensures
+/// protocol-level compatibility during the TLS handshake.
+pub const ALPN_PROTOCOL: &[u8] = b"lockframe";
