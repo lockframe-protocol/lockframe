@@ -103,10 +103,7 @@ async fn run_connection(
                         }
                     });
                 },
-                Err(e) => {
-                    eprintln!("Accept uni error: {e}");
-                    break;
-                },
+                Err(_) => break,
             }
         }
     });

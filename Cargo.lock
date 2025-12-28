@@ -1661,6 +1661,7 @@ dependencies = [
  "lockframe-core",
  "lockframe-crypto",
  "lockframe-proto",
+ "lockframe-server",
  "proptest",
  "quinn",
  "rustls",

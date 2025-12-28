@@ -32,5 +32,9 @@ transport = ["quinn", "rustls", "tokio", "bytes", "zerocopy"]
 # Property-based testing
 proptest = "1.5"
 
+# Integration tests
+lockframe-server = { path = "../lockframe-server" }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
+
 [lints]
 workspace = true
