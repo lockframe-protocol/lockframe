@@ -342,9 +342,7 @@ where
 
                         debug_assert_ne!(session_id, 0);
 
-                        // Store client's sender_id for KeyPackage registry
                         self.client_sender_id = hello.sender_id;
-
                         self.state = ConnectionState::Authenticated;
 
                         let reply = Payload::HelloReply(HelloReply {

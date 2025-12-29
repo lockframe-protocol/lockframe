@@ -135,8 +135,8 @@ fn server_creates_room_after_connection() {
         // Oracle: Room should exist
         verify_room_exists(&server, ROOM_ID, "after create");
 
-        // Epoch should be 0
-        assert_eq!(server.room_epoch(ROOM_ID), Some(0), "Initial epoch should be 0");
+        // Epoch should be None
+        assert_eq!(server.room_epoch(ROOM_ID), None, "Server does not track epochs");
 
         Ok(())
     });
