@@ -3,7 +3,10 @@
 //! The `Client` is the top-level state machine that manages multiple room
 //! memberships and orchestrates MLS operations with sender key encryption.
 
-use std::{collections::HashMap, time::Duration};
+use std::{
+    collections::HashMap,
+    time::{Duration, Instant},
+};
 
 use lockframe_core::{
     env::Environment,
@@ -11,8 +14,12 @@ use lockframe_core::{
 };
 use lockframe_crypto::{EncryptedMessage as CryptoEncryptedMessage, NONCE_RANDOM_SIZE};
 use lockframe_proto::{
-    Frame, FrameHeader, Opcode,
-    payloads::{app::EncryptedMessage, session::SyncResponse},
+    Frame, FrameHeader, Opcode, Payload,
+    payloads::{
+        app::EncryptedMessage,
+        mls::{KeyPackageFetchPayload, KeyPackagePublishRequest},
+        session::SyncResponse,
+    },
 };
 
 use crate::{
@@ -32,6 +39,9 @@ const SENDER_KEY_SECRET_SIZE: usize = 32;
 
 /// Timeout for pending commits before requesting sync (30 seconds).
 const COMMIT_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Timeout for pending KeyPackage fetch operations (60 seconds).
+const KEY_PACKAGE_FETCH_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// Client identity.
 ///
@@ -81,6 +91,10 @@ pub struct Client<E: Environment> {
     /// Each entry contains the crypto state needed to decrypt a Welcome.
     pending_joins: Vec<PendingJoin<E>>,
 
+    /// Pending add member operations.
+    /// Maps (room_id, user_id) to timestamp for completing the add.
+    pending_adds: HashMap<(RoomId, u64), Instant>,
+
     /// Environment for time/randomness.
     env: E,
 }
@@ -88,7 +102,13 @@ pub struct Client<E: Environment> {
 impl<E: Environment> Client<E> {
     /// Create a new client with the given identity.
     pub fn new(env: E, identity: ClientIdentity) -> Self {
-        Self { identity, rooms: HashMap::new(), pending_joins: Vec::new(), env }
+        Self {
+            identity,
+            rooms: HashMap::new(),
+            pending_joins: Vec::new(),
+            pending_adds: HashMap::new(),
+            env,
+        }
     }
 
     /// Client's stable sender ID used in frame headers.
@@ -144,6 +164,10 @@ impl<E: Environment> Client<E> {
             },
             ClientEvent::RemoveMembers { room_id, member_ids } => {
                 self.handle_remove_members(room_id, member_ids)
+            },
+            ClientEvent::PublishKeyPackage => self.handle_publish_key_package(),
+            ClientEvent::FetchAndAddMember { room_id, user_id } => {
+                self.handle_fetch_and_add_member(room_id, user_id)
             },
         }
     }
@@ -235,8 +259,8 @@ impl<E: Environment> Client<E> {
             Opcode::Commit => self.handle_commit(room_id, frame),
             Opcode::Welcome => self.handle_welcome(room_id, frame),
             Opcode::SyncResponse => self.handle_sync_response(room_id, frame),
+            Opcode::KeyPackageFetch => self.handle_key_package_fetch_response(frame),
             _ => {
-                // MLS
                 let room =
                     self.rooms.get_mut(&room_id).ok_or(ClientError::RoomNotFound { room_id })?;
 
@@ -537,19 +561,175 @@ impl<E: Environment> Client<E> {
         Ok(self.convert_mls_actions(room_id, mls_actions))
     }
 
+    /// Handle publish KeyPackage request.
+    ///
+    /// Generates a KeyPackage and sends it to the server registry.
+    fn handle_publish_key_package(&mut self) -> Result<Vec<ClientAction>, ClientError> {
+        let (kp_bytes, hash_ref) = self.generate_key_package()?;
+
+        let payload = KeyPackagePublishRequest { key_package_bytes: kp_bytes, hash_ref };
+
+        let frame = Payload::KeyPackagePublish(payload)
+            .into_frame(FrameHeader::new(Opcode::KeyPackagePublish))
+            .map_err(|e| ClientError::InvalidFrame { reason: e.to_string() })?;
+
+        Ok(vec![
+            ClientAction::Send(frame),
+            ClientAction::Log { message: "Published KeyPackage to server".to_string() },
+            ClientAction::KeyPackagePublished,
+        ])
+    }
+
+    /// Handle fetch and add member request.
+    ///
+    /// Sends a KeyPackage fetch request for the specified user.
+    /// When the response arrives, the member will be added to the room.
+    fn handle_fetch_and_add_member(
+        &mut self,
+        room_id: RoomId,
+        user_id: u64,
+    ) -> Result<Vec<ClientAction>, ClientError> {
+        if !self.rooms.contains_key(&room_id) {
+            return Err(ClientError::RoomNotFound { room_id });
+        }
+
+        self.pending_adds.insert((room_id, user_id), self.env.now());
+
+        let payload =
+            KeyPackageFetchPayload { user_id, key_package_bytes: Vec::new(), hash_ref: Vec::new() };
+
+        let frame = Payload::KeyPackageFetch(payload)
+            .into_frame(FrameHeader::new(Opcode::KeyPackageFetch))
+            .map_err(|e| ClientError::InvalidFrame { reason: e.to_string() })?;
+
+        Ok(vec![ClientAction::Send(frame), ClientAction::Log {
+            message: format!(
+                "Fetching KeyPackage for user {} to add to room {:x}",
+                user_id, room_id
+            ),
+        }])
+    }
+
+    /// Handle KeyPackage fetch response.
+    ///
+    /// Completes a pending add operation by using the fetched KeyPackage.
+    fn handle_key_package_fetch_response(
+        &mut self,
+        frame: Frame,
+    ) -> Result<Vec<ClientAction>, ClientError> {
+        let payload: KeyPackageFetchPayload = ciborium::de::from_reader(&frame.payload[..])
+            .map_err(|e| ClientError::InvalidFrame {
+                reason: format!("Failed to decode KeyPackageFetch response: {e}"),
+            })?;
+
+        if payload.key_package_bytes.is_empty() {
+            let matching_entries: Vec<(RoomId, u64)> = self
+                .pending_adds
+                .keys()
+                .filter(|(_, user_id)| *user_id == payload.user_id)
+                .copied()
+                .collect();
+
+            for (room_id, user_id) in matching_entries {
+                self.pending_adds.remove(&(room_id, user_id));
+            }
+
+            return Ok(vec![ClientAction::Log {
+                message: format!("No KeyPackage found for user {}", payload.user_id),
+            }]);
+        }
+
+        let matching_entries: Vec<(RoomId, u64)> = self
+            .pending_adds
+            .keys()
+            .filter(|(_, pending_user_id)| *pending_user_id == payload.user_id)
+            .copied()
+            .collect();
+
+        if matching_entries.is_empty() {
+            return Err(ClientError::InvalidFrame {
+                reason: format!("No pending add for user {}", payload.user_id),
+            });
+        }
+
+        let mut actions = Vec::new();
+        let key_package_bytes = payload.key_package_bytes.clone();
+
+        for (room_id, user_id) in matching_entries {
+            self.pending_adds.remove(&(room_id, user_id));
+
+            let room = match self.rooms.get_mut(&room_id) {
+                Some(room) => room,
+                None => {
+                    actions.push(ClientAction::Log {
+                        message: format!("Room {:x} not found for pending add, skipping", room_id),
+                    });
+                    continue;
+                },
+            };
+
+            match room.mls_group.add_members_from_bytes(&[key_package_bytes.clone()]) {
+                Ok(mls_actions) => {
+                    let mut room_actions = self.convert_mls_actions(room_id, mls_actions);
+                    room_actions.push(ClientAction::MemberAdded { room_id, user_id });
+                    room_actions.push(ClientAction::Log {
+                        message: format!(
+                            "Added user {} to room {:x} using fetched KeyPackage",
+                            user_id, room_id
+                        ),
+                    });
+                    actions.extend(room_actions);
+                },
+                Err(e) => {
+                    actions.push(ClientAction::Log {
+                        message: format!(
+                            "Failed to add user {} to room {:x}: {}",
+                            user_id, room_id, e
+                        ),
+                    });
+                },
+            }
+        }
+
+        Ok(actions)
+    }
+
     /// Handle tick (timeout processing).
     ///
     /// Checks all rooms for pending commits that have timed out.
+    /// Also cleans up stale pending KeyPackage fetch operations.
     /// For rooms with timed-out commits, clears the pending state and emits
     /// `RequestSync` actions.
-    fn handle_tick(&mut self, now: std::time::Instant) -> Result<Vec<ClientAction>, ClientError> {
+    fn handle_tick(&mut self, now: Instant) -> Result<Vec<ClientAction>, ClientError> {
         let mut actions = Vec::new();
+
+        let stale_adds: Vec<(RoomId, u64)> = self
+            .pending_adds
+            .iter()
+            .filter(|((_, _), timestamp)| {
+                now.duration_since(**timestamp) > KEY_PACKAGE_FETCH_TIMEOUT
+            })
+            .map(|((room_id, user_id), _)| (*room_id, *user_id))
+            .collect();
+
+        for (room_id, user_id) in stale_adds {
+            // Remove stale pending fetch operations
+            if let Some(_) = self.pending_adds.remove(&(room_id, user_id)) {
+                actions.push(ClientAction::Log {
+                    message: format!(
+                        "KeyPackage fetch timeout for user {} in room {:x}, removing pending operation",
+                        user_id, room_id
+                    ),
+                });
+            }
+        }
 
         for (&room_id, room) in &mut self.rooms {
             if room.mls_group.is_commit_timeout(now, COMMIT_TIMEOUT) {
                 let current_epoch = room.mls_group.epoch();
                 room.mls_group.clear_pending_commit();
 
+                // Sync MLS group to prevent hanging states
                 actions.push(ClientAction::RequestSync {
                     room_id,
                     from_epoch: current_epoch,
@@ -844,5 +1024,89 @@ mod tests {
         // Verify sender's ratchet advanced
         let room = client.rooms.get(&room_id).unwrap();
         assert_eq!(room.sender_keys.generation(0), Some(1)); // Now at gen 1
+    }
+
+    #[test]
+    fn pending_adds_timeout_cleanup() {
+        let env = TestEnv;
+        let identity = ClientIdentity::new(42);
+        let mut client = Client::new(env, identity);
+
+        let room_id = 0x1234_u128;
+        client.handle(ClientEvent::CreateRoom { room_id }).unwrap();
+
+        // Add a pending operation
+        let user_id = 123;
+        let _actions = client.handle(ClientEvent::FetchAndAddMember { room_id, user_id }).unwrap();
+
+        // Verify pending add exists
+        assert!(client.pending_adds.contains_key(&(room_id, user_id)));
+
+        // Simulate time passing beyond timeout
+        let now = Instant::now() + KEY_PACKAGE_FETCH_TIMEOUT + Duration::from_secs(1);
+        let actions = client.handle(ClientEvent::Tick { now }).unwrap();
+
+        // Verify pending add was cleaned up
+        assert!(!client.pending_adds.contains_key(&(room_id, user_id)));
+
+        // Verify timeout log message was generated
+        assert!(actions.iter().any(|action| {
+            matches!(action, ClientAction::Log { message } if message.contains("KeyPackage fetch timeout"))
+        }));
+    }
+
+    #[test]
+    fn pending_adds_multiple_rooms_same_user() {
+        let env = TestEnv;
+        let identity = ClientIdentity::new(42);
+        let mut client = Client::new(env, identity);
+
+        let room_id1 = 0x1234_u128;
+        let room_id2 = 0x5678_u128;
+        let user_id = 123;
+
+        client.handle(ClientEvent::CreateRoom { room_id: room_id1 }).unwrap();
+        client.handle(ClientEvent::CreateRoom { room_id: room_id2 }).unwrap();
+
+        let _actions1 =
+            client.handle(ClientEvent::FetchAndAddMember { room_id: room_id1, user_id }).unwrap();
+        let _actions2 =
+            client.handle(ClientEvent::FetchAndAddMember { room_id: room_id2, user_id }).unwrap();
+
+        assert!(client.pending_adds.contains_key(&(room_id1, user_id)));
+        assert!(client.pending_adds.contains_key(&(room_id2, user_id)));
+        assert_eq!(client.pending_adds.len(), 2);
+
+        let payload = KeyPackageFetchPayload {
+            user_id,
+            key_package_bytes: vec![1, 2, 3, 4],
+            hash_ref: vec![5, 6, 7, 8],
+        };
+        let frame = Payload::KeyPackageFetch(payload)
+            .into_frame(FrameHeader::new(Opcode::KeyPackageFetch))
+            .unwrap();
+
+        let actions = client.handle(ClientEvent::FrameReceived(frame)).unwrap();
+
+        // Verify both pending adds were cleaned up
+        assert!(!client.pending_adds.contains_key(&(room_id1, user_id)));
+        assert!(!client.pending_adds.contains_key(&(room_id2, user_id)));
+        assert_eq!(client.pending_adds.len(), 0);
+
+        // Verify both rooms were processed and failed with invalid KeyPackage
+        assert!(actions.iter().any(|action| {
+            matches!(action, ClientAction::Log { message } if
+                message.contains(&format!("Failed to add user {} to room {:x}", user_id, room_id1)))
+        }));
+        assert!(actions.iter().any(|action| {
+            matches!(action, ClientAction::Log { message } if
+                message.contains(&format!("Failed to add user {} to room {:x}", user_id, room_id2)))
+        }));
+
+        // Verify exactly 2 failure actions (one for each room)
+        let failure_actions: Vec<_> = actions.iter().filter(|action| {
+            matches!(action, ClientAction::Log { message } if message.contains("Failed to add user"))
+        }).collect();
+        assert_eq!(failure_actions.len(), 2);
     }
 }

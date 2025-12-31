@@ -68,6 +68,24 @@ pub enum ClientEvent {
         /// Member IDs to remove.
         member_ids: Vec<u64>,
     },
+
+    /// Publish our KeyPackage to the server registry.
+    ///
+    /// This makes our KeyPackage available for other clients to fetch
+    /// when adding us to rooms.
+    PublishKeyPackage,
+
+    /// Fetch a user's KeyPackage and add them to a room.
+    ///
+    /// Combines KeyPackage fetch + AddMembers in one operation.
+    /// The client sends a fetch request, and when the response arrives,
+    /// automatically adds the member to the specified room.
+    FetchAndAddMember {
+        /// Room to add the member to.
+        room_id: RoomId,
+        /// User ID whose KeyPackage to fetch.
+        user_id: u64,
+    },
 }
 
 /// Serializable snapshot of room state for persistence.
@@ -134,4 +152,18 @@ pub enum ClientAction {
         /// Log message.
         message: String,
     },
+
+    /// Member was added to a room.
+    ///
+    /// Emitted after successfully fetching a KeyPackage and adding
+    /// the member via MLS.
+    MemberAdded {
+        /// Room the member was added to.
+        room_id: RoomId,
+        /// User ID that was added.
+        user_id: u64,
+    },
+
+    /// KeyPackage was published successfully.
+    KeyPackagePublished,
 }
