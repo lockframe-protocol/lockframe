@@ -71,6 +71,17 @@ impl<E: Environment> Bridge<E> {
                 vec![AppEvent::Error { message: "JoinRoom not yet supported".to_string() }]
             },
 
+            AppAction::PublishKeyPackage => {
+                let result = self.client.handle(ClientEvent::PublishKeyPackage);
+                self.handle_client_result(result)
+            },
+
+            AppAction::AddMember { room_id, user_id } => {
+                let result =
+                    self.client.handle(ClientEvent::FetchAndAddMember { room_id, user_id });
+                self.handle_client_result(result)
+            },
+
             AppAction::Render | AppAction::Quit | AppAction::Connect { .. } => vec![],
         }
     }
@@ -135,6 +146,14 @@ impl<E: Environment> Bridge<E> {
 
                 ClientAction::RequestSync { .. } | ClientAction::Log { .. } => {
                     // Handled internally or logged, no UI event needed
+                },
+
+                ClientAction::MemberAdded { room_id, user_id } => {
+                    events.push(AppEvent::MemberAdded { room_id, member_id: user_id });
+                },
+
+                ClientAction::KeyPackagePublished => {
+                    // KeyPackage published successfully, no UI event needed
                 },
             }
         }

@@ -224,7 +224,9 @@ impl Runtime {
                     AppAction::CreateRoom { .. }
                     | AppAction::JoinRoom { .. }
                     | AppAction::LeaveRoom { .. }
-                    | AppAction::SendMessage { .. } => {
+                    | AppAction::SendMessage { .. }
+                    | AppAction::PublishKeyPackage
+                    | AppAction::AddMember { .. } => {
                         let events = self.bridge.process_app_action(action);
                         for event in events {
                             let new_actions = self.app.handle(event);

@@ -44,4 +44,15 @@ pub enum AppAction {
         /// Message payload.
         content: Vec<u8>,
     },
+
+    /// Publish our KeyPackage to the server registry.
+    PublishKeyPackage,
+
+    /// Add a member to a room by fetching their KeyPackage.
+    AddMember {
+        /// Room UUID.
+        room_id: RoomId,
+        /// User ID to add.
+        user_id: u64,
+    },
 }

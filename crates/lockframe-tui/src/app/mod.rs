@@ -219,6 +219,15 @@ impl App {
                 || vec![AppAction::Render],
                 |room_id| vec![AppAction::LeaveRoom { room_id }, AppAction::Render],
             ),
+            "publish" => vec![AppAction::PublishKeyPackage, AppAction::Render],
+            "add" => {
+                if let (Some(room_id), Some(user_id_str)) = (self.active_room, parts.get(1)) {
+                    if let Ok(user_id) = user_id_str.parse::<u64>() {
+                        return vec![AppAction::AddMember { room_id, user_id }, AppAction::Render];
+                    }
+                }
+                vec![AppAction::Render]
+            },
             "quit" | "q" => vec![AppAction::Quit],
             _ => vec![AppAction::Render],
         }
