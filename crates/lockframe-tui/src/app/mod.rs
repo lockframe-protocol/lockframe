@@ -65,6 +65,10 @@ impl App {
                 self.terminal_size = (cols, rows);
                 vec![AppAction::Render]
             },
+            AppEvent::Connecting => {
+                self.state = ConnectionState::Connecting;
+                vec![AppAction::Render]
+            },
             AppEvent::Connected { session_id } => {
                 self.state = ConnectionState::Connected { session_id };
                 vec![AppAction::Render]

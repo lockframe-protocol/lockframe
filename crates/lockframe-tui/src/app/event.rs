@@ -18,6 +18,9 @@ pub enum AppEvent {
     /// Terminal resize (columns, rows).
     Resize(u16, u16),
 
+    /// Connection initiation in progress, waiting for authentication.
+    Connecting,
+
     /// Connection established with server.
     Connected {
         /// Application-layer session ID.

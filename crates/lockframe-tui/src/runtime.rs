@@ -16,9 +16,11 @@ use crossterm::{
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
 use futures::StreamExt;
-use lockframe_client::transport::{self, ConnectedClient};
+use lockframe_client::transport::{self, ConnectedClient, TransportError};
 use lockframe_core::env::Environment;
-use lockframe_proto::Frame;
+use lockframe_proto::{
+    Frame, FrameHeader, Opcode, Payload, errors::ProtocolError, payloads::session::Hello,
+};
 use lockframe_server::SystemEnv;
 use ratatui::{Terminal, backend::CrosstermBackend};
 use thiserror::Error;
@@ -41,7 +43,15 @@ pub enum RuntimeError {
 
     /// Transport error.
     #[error("transport error: {0}")]
-    Transport(#[from] transport::TransportError),
+    Transport(#[from] TransportError),
+
+    /// Protocol error.
+    #[error("protocol error: {0}")]
+    Protocol(#[from] ProtocolError),
+
+    /// Frame sending error.
+    #[error("failed to send frames: {0}")]
+    FrameSend(#[from] Box<dyn std::error::Error + Send + Sync>),
 }
 
 /// Connection to a server (either in-process or QUIC).
@@ -144,6 +154,12 @@ impl Runtime {
 
                     // Frames from server
                     Some(frame) = conn.from_server().recv() => {
+                        if let Some(Opcode::HelloReply) = frame.header.opcode_enum() {
+                            // Extract session_id and skip frame processing
+                            self.handle_hello_reply(frame).await?;
+                            continue;
+                        }
+
                         let events = self.bridge.handle_frame(frame);
                         self.process_bridge_events(events).await?
                     }
@@ -213,26 +229,26 @@ impl Runtime {
             for action in actions {
                 match action {
                     AppAction::Render => self.render()?,
-
                     AppAction::Quit => return Ok(true),
-
-                    AppAction::Connect { .. } => {
+                    AppAction::Connect { server_addr: _ } => {
                         self.connect().await?;
                     },
 
                     // Protocol operations go through the bridge
-                    AppAction::CreateRoom { .. }
-                    | AppAction::JoinRoom { .. }
-                    | AppAction::LeaveRoom { .. }
-                    | AppAction::SendMessage { .. }
+                    AppAction::CreateRoom { room_id: _ }
+                    | AppAction::JoinRoom { room_id: _ }
+                    | AppAction::LeaveRoom { room_id: _ }
+                    | AppAction::SendMessage { room_id: _, content: _ }
                     | AppAction::PublishKeyPackage
-                    | AppAction::AddMember { .. } => {
+                    | AppAction::AddMember { room_id: _, user_id: _ } => {
                         let events = self.bridge.process_app_action(action);
                         for event in events {
                             let new_actions = self.app.handle(event);
                             pending_actions.extend(new_actions);
                         }
-                        self.send_outgoing_frames().await;
+                        self.send_outgoing_frames().await.unwrap_or_else(|e| {
+                            tracing::warn!("Failed to send outgoing frames: {:?}", e);
+                        });
                     },
                 }
             }
@@ -240,6 +256,65 @@ impl Runtime {
         Ok(false)
     }
 
+    /// Handle HelloReply frame to extract session_id and trigger connection
+    /// flow.
+    async fn handle_hello_reply(&mut self, frame: Frame) -> Result<(), RuntimeError> {
+        let payload = Payload::from_frame(frame)?;
+
+        let hello_reply = match payload {
+            Payload::HelloReply(reply) => reply,
+            other => {
+                tracing::warn!("Unexpected payload type for HelloReply opcode: {:?}", other);
+                return Err(RuntimeError::Protocol(
+                    lockframe_proto::errors::ProtocolError::CborDecode(format!(
+                        "Expected HelloReply, got {:?}",
+                        other
+                    )),
+                ));
+            },
+        };
+
+        let events = self.bridge.process_app_action(AppAction::PublishKeyPackage);
+        for event in events {
+            let actions = self.app.handle(event);
+            self.process_actions_blocking(actions).unwrap_or_else(|e| {
+                // These are app errors not protocol errors, don't fail connection
+                tracing::warn!("Failed to process actions from app event: {:?}", e);
+            });
+        }
+
+        let session_id = hello_reply.session_id;
+        let actions = self.app.handle(AppEvent::Connected { session_id });
+        self.process_actions_blocking(actions).unwrap_or_else(|e| {
+            tracing::warn!("Failed to process actions from Connected event: {:?}", e);
+        });
+
+        self.send_outgoing_frames().await?;
+
+        Ok(())
+    }
+
+    /// Process actions synchronously (use in sync contexts).
+    fn process_actions_blocking(&mut self, actions: Vec<AppAction>) -> Result<(), RuntimeError> {
+        for action in actions {
+            match action {
+                AppAction::Render => self.render()?,
+                AppAction::Quit => return Ok(()),
+
+                // Protocol actions shouldn't happen in sync contexts
+                AppAction::Connect { server_addr: _ }
+                | AppAction::CreateRoom { room_id: _ }
+                | AppAction::JoinRoom { room_id: _ }
+                | AppAction::LeaveRoom { room_id: _ }
+                | AppAction::SendMessage { room_id: _, content: _ }
+                | AppAction::PublishKeyPackage
+                | AppAction::AddMember { room_id: _, user_id: _ } => {
+                    tracing::warn!("Unexpected protocol action in sync context: {:?}", action);
+                },
+            }
+        }
+        Ok(())
+    }
     /// Process events from the bridge back to the app.
     async fn process_bridge_events(&mut self, events: Vec<AppEvent>) -> Result<bool, RuntimeError> {
         for event in events {
@@ -267,22 +342,81 @@ impl Runtime {
         };
 
         self.connection = Some(connection);
-        let _ = self.app.handle(AppEvent::Connected { session_id });
+        self.send_hello().await?;
+
+        self.app.handle(AppEvent::Connecting).into_iter().for_each(|action| match action {
+            AppAction::Render => {
+                self.render().unwrap_or_else(|e| {
+                    tracing::warn!("Failed to render during Connecting: {:?}", e);
+                });
+            },
+
+            // Protocol actions shouldn't happen when connecting
+            AppAction::Quit
+            | AppAction::Connect { server_addr: _ }
+            | AppAction::CreateRoom { room_id: _ }
+            | AppAction::JoinRoom { room_id: _ }
+            | AppAction::LeaveRoom { room_id: _ }
+            | AppAction::SendMessage { room_id: _, content: _ }
+            | AppAction::PublishKeyPackage
+            | AppAction::AddMember { room_id: _, user_id: _ } => {
+                tracing::warn!("Unexpected action during Connecting: {:?}", action);
+            },
+        });
 
         Ok(())
     }
 
-    /// Send all pending outgoing frames to the server.
-    async fn send_outgoing_frames(&mut self) {
-        let frames = self.bridge.take_outgoing();
-        if let Some(ref conn) = self.connection {
-            for frame in frames {
-                if conn.to_server().send(frame).await.is_err() {
-                    // Server disconnected
-                    break;
-                }
-            }
+    /// Send Hello frame to authenticate with the server.
+    async fn send_hello(&mut self) -> Result<(), RuntimeError> {
+        let hello = Hello { version: 1, capabilities: Vec::new(), auth_token: None };
+
+        let frame = match Payload::Hello(hello).into_frame(FrameHeader::new(Opcode::Hello)) {
+            Ok(frame) => frame,
+            Err(e) => {
+                tracing::error!("Failed to create Hello frame: {:?}", e);
+                return Err(RuntimeError::Protocol(
+                    lockframe_proto::errors::ProtocolError::CborDecode(format!(
+                        "Failed to create Hello frame: {:?}",
+                        e
+                    )),
+                ));
+            },
+        };
+
+        if let Some(conn) = &self.connection {
+            conn.to_server().send(frame).await.map_err(|e| {
+                tracing::error!("Failed to send Hello frame: {:?}", e);
+                RuntimeError::Transport(TransportError::Stream(format!(
+                    "Channel send failed: {:?}",
+                    e
+                )))
+            })?;
+            return Ok(());
+        } else {
+            tracing::error!("No connection available for Hello frame");
+            return Err(RuntimeError::Io(std::io::Error::new(
+                std::io::ErrorKind::NotConnected,
+                "No connection available",
+            )));
         }
+    }
+
+    /// Send all pending outgoing frames to the server.
+    async fn send_outgoing_frames(
+        &mut self,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let frames = self.bridge.take_outgoing();
+        if frames.is_empty() {
+            return Ok(());
+        }
+
+        let conn = self.connection.as_mut().ok_or("No connection available")?;
+
+        for frame in frames {
+            conn.to_server().send(frame).await?;
+        }
+        Ok(())
     }
 
     /// Render the UI.
