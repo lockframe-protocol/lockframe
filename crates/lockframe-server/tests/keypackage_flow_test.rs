@@ -13,9 +13,7 @@ use lockframe_proto::{
     Frame, FrameHeader, Opcode, Payload,
     payloads::mls::{KeyPackageFetchPayload, KeyPackagePublishRequest},
 };
-use lockframe_server::{
-    DriverConfig, MemoryStorage, ServerAction, ServerDriver, ServerEvent,
-};
+use lockframe_server::{DriverConfig, MemoryStorage, ServerAction, ServerDriver, ServerEvent};
 
 // Test environment using system time and RNG
 #[derive(Clone)]
@@ -69,9 +67,8 @@ fn keypackage_publish_and_fetch_flow() {
         sender_id: Some(1000), // Client A's user_id
         auth_token: None,
     });
-    let hello_frame_a = hello_a
-        .into_frame(FrameHeader::new(Opcode::Hello))
-        .expect("create hello frame");
+    let hello_frame_a =
+        hello_a.into_frame(FrameHeader::new(Opcode::Hello)).expect("create hello frame");
     driver
         .process_event(ServerEvent::FrameReceived {
             session_id: client_a_session,
@@ -86,9 +83,8 @@ fn keypackage_publish_and_fetch_flow() {
         sender_id: Some(user_id_b),
         auth_token: None,
     });
-    let hello_frame_b = hello_b
-        .into_frame(FrameHeader::new(Opcode::Hello))
-        .expect("create hello frame");
+    let hello_frame_b =
+        hello_b.into_frame(FrameHeader::new(Opcode::Hello)).expect("create hello frame");
     driver
         .process_event(ServerEvent::FrameReceived {
             session_id: client_b_session,
@@ -142,18 +138,17 @@ fn keypackage_publish_and_fetch_flow() {
     let response_frame = fetch_actions
         .iter()
         .find_map(|a| match a {
-            ServerAction::SendToSession { session_id, frame } if *session_id == client_a_session => {
+            ServerAction::SendToSession { session_id, frame }
+                if *session_id == client_a_session =>
+            {
                 Some(frame)
-            }
+            },
             _ => None,
         })
         .expect("Should send response to Client A");
 
     // Verify response contains the KeyPackage
-    assert_eq!(
-        response_frame.header.opcode_enum(),
-        Some(Opcode::KeyPackageFetch)
-    );
+    assert_eq!(response_frame.header.opcode_enum(), Some(Opcode::KeyPackageFetch));
 
     let response_payload = Payload::from_frame(response_frame.clone()).expect("decode response");
     match response_payload {
@@ -161,7 +156,7 @@ fn keypackage_publish_and_fetch_flow() {
             assert_eq!(kp.user_id, user_id_b);
             assert_eq!(kp.key_package_bytes, kp_bytes);
             assert_eq!(kp.hash_ref, hash_ref);
-        }
+        },
         _ => panic!("Expected KeyPackageFetch response"),
     }
 }
@@ -185,11 +180,13 @@ fn keypackage_fetch_not_found() {
         sender_id: Some(1000),
         auth_token: None,
     });
-    let hello_frame = hello
-        .into_frame(FrameHeader::new(Opcode::Hello))
-        .expect("create hello frame");
+    let hello_frame =
+        hello.into_frame(FrameHeader::new(Opcode::Hello)).expect("create hello frame");
     driver
-        .process_event(ServerEvent::FrameReceived { session_id: client_session, frame: hello_frame })
+        .process_event(ServerEvent::FrameReceived {
+            session_id: client_session,
+            frame: hello_frame,
+        })
         .expect("auth");
 
     // Try to fetch KeyPackage for user that hasn't published
@@ -215,7 +212,7 @@ fn keypackage_fetch_not_found() {
         .find_map(|a| match a {
             ServerAction::SendToSession { session_id, frame } if *session_id == client_session => {
                 Some(frame)
-            }
+            },
             _ => None,
         })
         .expect("Should send error response");
@@ -400,20 +397,18 @@ fn full_multi_client_join_flow() {
         .unwrap();
 
     // Verify Alice gets Bob's KeyPackage
-    let kp_response = fetch_actions
-        .iter()
-        .find_map(|a| match a {
-            ServerAction::SendToSession { session_id, frame } if *session_id == alice_session => {
-                Payload::from_frame(frame.clone()).ok()
-            }
-            _ => None,
-        });
+    let kp_response = fetch_actions.iter().find_map(|a| match a {
+        ServerAction::SendToSession { session_id, frame } if *session_id == alice_session => {
+            Payload::from_frame(frame.clone()).ok()
+        },
+        _ => None,
+    });
 
     match kp_response {
         Some(Payload::KeyPackageFetch(kp)) => {
             assert_eq!(kp.user_id, bob_id);
             assert_eq!(kp.key_package_bytes, vec![0xb0, 0xb0, 0xb0]);
-        }
+        },
         _ => panic!("Expected KeyPackageFetch response"),
     }
 
@@ -433,7 +428,9 @@ fn full_multi_client_join_flow() {
 
     // Should broadcast and persist
     assert!(
-        commit_actions.iter().any(|a| matches!(a, ServerAction::BroadcastToRoom { room_id: rid, .. } if *rid == room_id)),
+        commit_actions.iter().any(
+            |a| matches!(a, ServerAction::BroadcastToRoom { room_id: rid, .. } if *rid == room_id)
+        ),
         "Commit should be broadcast"
     );
 
@@ -458,9 +455,5 @@ fn full_multi_client_join_flow() {
             if *session_id == bob_session && frame.header.opcode_enum() == Some(Opcode::Welcome))
     });
 
-    assert!(
-        welcome_to_bob,
-        "Welcome should be routed to Bob: {:?}",
-        welcome_actions
-    );
+    assert!(welcome_to_bob, "Welcome should be routed to Bob: {:?}", welcome_actions);
 }

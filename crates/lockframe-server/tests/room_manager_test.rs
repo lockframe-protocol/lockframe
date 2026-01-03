@@ -1,7 +1,8 @@
 //! Room Manager tests
 //!
 //! Tests for the routing-only server RoomManager.
-//! The server does NOT participate in MLS - it just routes frames between clients.
+//! The server does NOT participate in MLS - it just routes frames between
+//! clients.
 
 use std::time::Duration;
 
@@ -138,11 +139,10 @@ fn process_frame_succeeds_for_valid_frame() {
     assert!(result.is_ok());
 
     let actions = result.unwrap();
-    // Should have actions (AcceptFrame becomes PersistFrame, StoreFrame becomes
-    // PersistFrame, BroadcastToRoom becomes Broadcast) Sequencer returns 3
-    // actions: AcceptFrame, StoreFrame, BroadcastToRoom
+    // Should have 2 actions: StoreFrame becomes PersistFrame, BroadcastToRoom
+    // becomes Broadcast. AcceptFrame is filtered out (just validation marker).
     assert!(!actions.is_empty());
-    assert_eq!(actions.len(), 3);
+    assert_eq!(actions.len(), 2);
 }
 
 #[test]
@@ -169,13 +169,13 @@ fn process_frame_returns_correct_action_types() {
 
     let actions = result.unwrap();
 
-    // Verify we have the right action types
-    // First two should be PersistFrame (from AcceptFrame and StoreFrame)
+    // Verify we have the right action types:
+    // - PersistFrame (from StoreFrame)
+    // - Broadcast (from BroadcastToRoom)
+    // AcceptFrame is filtered out.
+    assert_eq!(actions.len(), 2);
     assert!(matches!(actions[0], RoomAction::PersistFrame { .. }));
-    assert!(matches!(actions[1], RoomAction::PersistFrame { .. }));
-
-    // Last should be Broadcast (from BroadcastToRoom)
-    assert!(matches!(actions[2], RoomAction::Broadcast { .. }));
+    assert!(matches!(actions[1], RoomAction::Broadcast { .. }));
 }
 
 /// Test that the server routes frames without MLS validation.

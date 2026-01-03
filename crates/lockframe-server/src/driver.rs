@@ -257,10 +257,11 @@ where
                 }
 
                 if opcode == Some(Opcode::Hello) {
-                    if let Some(info) = self.registry.sessions_mut(session_id) {
-                        info.authenticated = true;
-                        // Prefer client's sender_id (from Hello) for KeyPackage registry
-                        info.user_id = conn.client_sender_id().or(conn.session_id());
+                    // Update session with authenticated user_id for reverse lookup
+                    let user_id = conn.client_sender_id().or(conn.session_id());
+                    if let Some(user_id) = user_id {
+                        let new_info = SessionInfo::authenticated(user_id);
+                        self.registry.update_session_info(session_id, new_info);
                     }
                 }
             },
@@ -287,9 +288,6 @@ where
                 let recipient_id = frame.header.recipient_id();
                 conn.update_activity(now);
 
-                let room_actions =
-                    self.room_manager.process_frame(frame, &self.env, &self.storage)?;
-
                 if let Some(recipient_session_id) = self.registry.session_id_for_user(recipient_id)
                 {
                     self.registry.subscribe(recipient_session_id, room_id);
@@ -302,6 +300,12 @@ where
                         ),
                         timestamp: now,
                     });
+
+                    // Route directly to the recipient without going through sequencing
+                    actions.push(ServerAction::SendToSession {
+                        session_id: recipient_session_id,
+                        frame,
+                    });
                 } else {
                     actions.push(ServerAction::Log {
                         level: LogLevel::Warn,
@@ -312,6 +316,12 @@ where
                         timestamp: now,
                     });
                 }
+            },
+
+            Some(Opcode::AppMessage) => {
+                conn.update_activity(now);
+                let room_actions =
+                    self.room_manager.process_frame(frame, &self.env, &self.storage)?;
 
                 for room_action in room_actions {
                     actions.extend(self.convert_room_action(room_action, session_id));
@@ -319,7 +329,7 @@ where
             },
 
             _ => {
-                // Room-level frames (Commit, Proposal, AppMessage, etc.)
+                // Room-level frames
                 conn.update_activity(now);
                 let room_id = frame.header.room_id();
 
@@ -841,6 +851,14 @@ where
     /// Storage backend for frame/state persistence.
     pub fn storage(&self) -> &S {
         &self.storage
+    }
+
+    /// Clear sequencer state for a room.
+    ///
+    /// This is useful when we detect a log index conflict and need to
+    /// re-initialize the sequencer from storage.
+    pub fn clear_room_sequencer(&mut self, room_id: u128) -> bool {
+        self.room_manager.clear_room_sequencer(room_id)
     }
 }
 

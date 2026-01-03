@@ -181,7 +181,19 @@ impl RoomManager {
         };
         let has_more = latest_index.is_some_and(|latest| last_loaded_index < latest);
 
-        Ok(RoomAction::SendSyncResponse { sender_id, room_id, frames: frame_bytes, has_more, processed_at: now })
+        Ok(RoomAction::SendSyncResponse {
+            sender_id,
+            room_id,
+            frames: frame_bytes,
+            has_more,
+            processed_at: now,
+        })
+    }
+
+    /// Delegates to [`Sequencer::clear_room`] for recovery from storage
+    /// conflicts.
+    pub fn clear_room_sequencer(&mut self, room_id: u128) -> bool {
+        self.sequencer.clear_room(room_id)
     }
 
     /// Process a frame through sequencing and routing.
@@ -211,25 +223,29 @@ impl RoomManager {
         // 3. Convert SequencerAction to RoomAction
         let room_actions: Vec<RoomAction> = sequencer_actions
             .into_iter()
-            .map(|action| match action {
-                SequencerAction::AcceptFrame { room_id, log_index, frame } => {
-                    RoomAction::PersistFrame { room_id, log_index, frame, processed_at: now }
+            .filter_map(|action| match action {
+                SequencerAction::AcceptFrame { .. } => {
+                    // AcceptFrame is just validation, no storage needed
+                    // StoreFrame handles the actual persistence
+                    None
                 },
                 SequencerAction::StoreFrame { room_id, log_index, frame } => {
-                    RoomAction::PersistFrame { room_id, log_index, frame, processed_at: now }
+                    Some(RoomAction::PersistFrame { room_id, log_index, frame, processed_at: now })
                 },
-                SequencerAction::BroadcastToRoom { room_id, frame } => RoomAction::Broadcast {
-                    room_id,
-                    frame,
-                    exclude_sender: false,
-                    processed_at: now,
+                SequencerAction::BroadcastToRoom { room_id, frame } => {
+                    Some(RoomAction::Broadcast {
+                        room_id,
+                        frame,
+                        exclude_sender: false,
+                        processed_at: now,
+                    })
                 },
                 SequencerAction::RejectFrame { room_id: _, reason, original_frame } => {
-                    RoomAction::Reject {
+                    Some(RoomAction::Reject {
                         sender_id: original_frame.header.sender_id(),
                         reason,
                         processed_at: now,
-                    }
+                    })
                 },
             })
             .collect();

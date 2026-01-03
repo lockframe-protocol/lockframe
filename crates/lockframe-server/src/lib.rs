@@ -328,6 +328,16 @@ async fn execute_actions(
             ServerAction::PersistFrame { room_id, log_index, frame } => {
                 if let Err(e) = driver.storage().store_frame(room_id, log_index, &frame) {
                     tracing::error!("Failed to persist frame: {}", e);
+
+                    // Sequencer state drifted from storage. Re-initialize
+                    // room state from storage on next frame to sync
+                    if let StorageError::Conflict { .. } = e {
+                        tracing::warn!(
+                            %room_id,
+                            "Clearing sequencer state due to log index conflict"
+                        );
+                        driver.clear_room_sequencer(room_id);
+                    }
                 }
             },
 

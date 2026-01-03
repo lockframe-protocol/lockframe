@@ -187,6 +187,13 @@ impl Sequencer {
 
             let next_log_index = latest_index.map(|i| i + 1).unwrap_or(0);
 
+            tracing::info!(
+                room_id = %room_id,
+                latest_storage_index = ?latest_index,
+                next_log_index,
+                "Initializing sequencer for room"
+            );
+
             debug_assert!(
                 latest_index.map(|i| next_log_index == i + 1).unwrap_or(next_log_index == 0)
             );
@@ -212,7 +219,7 @@ impl Sequencer {
 
         debug_assert!(room.next_log_index > log_index);
 
-        let sequenced_frame = rebuild_frame_with_index(frame, log_index)?;
+        let sequenced_frame = rebuild_frame_with_index(frame.clone(), log_index)?;
 
         debug_assert_eq!(sequenced_frame.header.log_index(), log_index);
 
@@ -228,6 +235,15 @@ impl Sequencer {
     #[cfg(test)]
     pub fn next_log_index(&self, room_id: u128) -> Option<u64> {
         self.rooms.get(&room_id).map(|r| r.next_log_index)
+    }
+
+    /// Forces re-initialization from storage on next frame.
+    ///
+    /// Called when storage reports a log index conflict, indicating our
+    /// in-memory state has drifted from the persisted log (e.g., after
+    /// a server restart or concurrent write).
+    pub fn clear_room(&mut self, room_id: u128) -> bool {
+        self.rooms.remove(&room_id).is_some()
     }
 }
 
