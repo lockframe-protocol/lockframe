@@ -336,6 +336,11 @@ impl FrameHeader {
     pub fn set_hlc_timestamp(&mut self, timestamp: u64) {
         self.hlc_timestamp = timestamp.to_be_bytes();
     }
+
+    /// Set payload size (must be set before signing if signature is used).
+    pub fn set_payload_size(&mut self, size: u32) {
+        self.payload_size = size.to_be_bytes();
+    }
 }
 
 // Manual Debug implementation (can't derive due to packed repr)

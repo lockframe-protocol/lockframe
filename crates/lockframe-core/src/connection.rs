@@ -149,7 +149,8 @@ where
 
     /// Client's sender ID from Hello frame. `None` if not provided.
     ///
-    /// Used for KeyPackage registry lookup. Falls back to session_id if not set.
+    /// Used for KeyPackage registry lookup. Falls back to session_id if not
+    /// set.
     #[must_use]
     pub fn client_sender_id(&self) -> Option<u64> {
         self.client_sender_id
@@ -188,8 +189,12 @@ where
         self.state = ConnectionState::Pending;
         self.last_activity = now;
 
-        let hello =
-            Payload::Hello(Hello { version: 1, capabilities: vec![], sender_id: None, auth_token: None });
+        let hello = Payload::Hello(Hello {
+            version: 1,
+            capabilities: vec![],
+            sender_id: None,
+            auth_token: None,
+        });
         let frame = hello.into_frame(FrameHeader::new(Opcode::Hello))?;
 
         Ok(vec![ConnectionAction::SendFrame(frame)])

@@ -159,8 +159,12 @@ mod tests {
 
     #[test]
     fn hello_serde() {
-        let hello =
-            Hello { version: 1, capabilities: vec!["mls".to_string()], sender_id: None, auth_token: None };
+        let hello = Hello {
+            version: 1,
+            capabilities: vec!["mls".to_string()],
+            sender_id: None,
+            auth_token: None,
+        };
 
         let cbor = ciborium::ser::into_writer(&hello, Vec::new());
         assert!(cbor.is_ok());

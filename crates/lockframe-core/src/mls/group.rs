@@ -203,14 +203,15 @@ impl<E: Environment> MlsGroup<E> {
 
     /// Sign a frame header using this group's MLS signature key.
     ///
-    /// The signature is computed over the first 64 bytes of the header
-    /// (the routing/sequencing data, excluding the signature field itself).
-    /// The signature is set directly on the header.
+    /// The signature is computed over the immutable parts of the routing data
+    /// (see `FrameHeader::signing_data()`), excluding `context_id` (bytes
+    /// 40-47) which holds `log_index` for sequenced frames. The server
+    /// assigns log_index during sequencing, so it must be excluded from the
+    /// signature.
     pub fn sign_frame_header(&self, header: &mut FrameHeader) {
-        let header_bytes = header.to_bytes();
-        let signed_data = &header_bytes[..64];
+        let signed_data = header.signing_data();
 
-        if let Ok(signature) = self.signer.sign(signed_data) {
+        if let Ok(signature) = self.signer.sign(&signed_data) {
             if signature.len() == 64 {
                 let mut sig_bytes = [0u8; 64];
                 sig_bytes.copy_from_slice(&signature);

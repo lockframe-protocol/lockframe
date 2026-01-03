@@ -29,8 +29,12 @@ fn frame_to_hex(frame: &Frame) -> String {
 
 #[test]
 fn snapshot_hello_frame() {
-    let hello =
-        Payload::Hello(Hello { version: 1, capabilities: vec![], sender_id: None, auth_token: None });
+    let hello = Payload::Hello(Hello {
+        version: 1,
+        capabilities: vec![],
+        sender_id: None,
+        auth_token: None,
+    });
 
     let frame =
         hello.into_frame(FrameHeader::new(Opcode::Hello)).expect("frame creation should succeed");
