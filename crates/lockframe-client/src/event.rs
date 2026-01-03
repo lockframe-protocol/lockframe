@@ -166,4 +166,14 @@ pub enum ClientAction {
 
     /// KeyPackage was published successfully.
     KeyPackagePublished,
+
+    /// No valid KeyPackage available for joining.
+    ///
+    /// Emitted when a Welcome cannot be processed because there's no matching
+    /// pending KeyPackage state. The caller should trigger `PublishKeyPackage`
+    /// to make the client addable to rooms again.
+    KeyPackageNeeded {
+        /// Reason the KeyPackage is needed.
+        reason: String,
+    },
 }

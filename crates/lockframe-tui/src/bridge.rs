@@ -5,7 +5,7 @@
 
 use lockframe_client::{Client, ClientAction, ClientEvent, ClientIdentity};
 use lockframe_core::env::Environment;
-use lockframe_proto::Frame;
+use lockframe_proto::{Frame, FrameHeader, Opcode, Payload, payloads::session::SyncRequest};
 
 use crate::app::{AppAction, AppEvent};
 
@@ -143,26 +143,15 @@ impl<E: Environment> Bridge<E> {
                 },
 
                 ClientAction::RequestSync { from_epoch, .. } => {
-                    // from_epoch maps to from_log_index: both are monotonic counters
-                    // starting at 0. The server sequences all frames, so log_index
-                    // tracks the total order. Epochs advance on MLS commits, which
-                    // are a subset of sequenced frames - so from_epoch is a valid
-                    // lower bound for catching up.
-                    let payload = lockframe_proto::payloads::session::SyncRequest {
-                        from_log_index: from_epoch,
-                        limit: 100,
-                    };
-
-                    match lockframe_proto::Payload::SyncRequest(payload).into_frame(
-                        lockframe_proto::FrameHeader::new(lockframe_proto::Opcode::SyncRequest),
-                    ) {
+                    // from_epoch maps to from_log_index: epochs are a subset of
+                    // sequenced frames, so from_epoch is a valid lower bound.
+                    let payload = SyncRequest { from_log_index: from_epoch, limit: 100 };
+                    match Payload::SyncRequest(payload)
+                        .into_frame(FrameHeader::new(Opcode::SyncRequest))
+                    {
                         Ok(frame) => self.outgoing.push(frame),
                         Err(e) => {
-                            tracing::error!(
-                                from_epoch,
-                                error = %e,
-                                "Failed to create SyncRequest frame"
-                            );
+                            tracing::error!(from_epoch, error = %e, "Failed to create SyncRequest");
                         },
                     }
                 },
@@ -177,6 +166,22 @@ impl<E: Environment> Bridge<E> {
 
                 ClientAction::KeyPackagePublished => {
                     // KeyPackage published successfully, no UI event needed
+                },
+
+                ClientAction::KeyPackageNeeded { reason } => {
+                    tracing::warn!(%reason, "KeyPackage needed, auto-republishing");
+
+                    match self.client.handle(ClientEvent::PublishKeyPackage) {
+                        Ok(actions) => {
+                            let republish_events = self.process_client_actions(actions);
+                            events.extend(republish_events);
+                        },
+                        Err(e) => {
+                            events.push(AppEvent::Error {
+                                message: format!("Failed to republish KeyPackage: {}", e),
+                            });
+                        },
+                    }
                 },
             }
         }
@@ -274,5 +279,32 @@ mod tests {
         let events = bridge.process_app_action(AppAction::LeaveRoom { room_id: 1 });
 
         assert!(events.iter().any(|e| matches!(e, AppEvent::RoomLeft { room_id: 1 })));
+    }
+
+    #[test]
+    fn welcome_without_keypackage_triggers_auto_republish() {
+        use lockframe_proto::{Frame, FrameHeader, Opcode};
+
+        let mut bridge = Bridge::new(TestEnv, 42);
+
+        // Receive a Welcome without having published a KeyPackage
+        let room_id = 0x1234_u128;
+        let mut header = FrameHeader::new(Opcode::Welcome);
+        header.set_room_id(room_id);
+        let frame = Frame::new(header, vec![1, 2, 3, 4]);
+
+        // Clear any existing outgoing frames
+        let _ = bridge.take_outgoing();
+
+        // Process the Welcome - should trigger auto-republish
+        let _events = bridge.handle_frame(frame);
+
+        // Should have generated a new KeyPackage publish frame
+        let frames = bridge.take_outgoing();
+        assert!(
+            frames.iter().any(|f| f.header.opcode_enum() == Some(Opcode::KeyPackagePublish)),
+            "Expected KeyPackagePublish frame after failed Welcome, got: {:?}",
+            frames.iter().map(|f| f.header.opcode_enum()).collect::<Vec<_>>()
+        );
     }
 }

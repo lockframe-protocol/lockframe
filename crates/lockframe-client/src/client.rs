@@ -415,15 +415,23 @@ impl<E: Environment> Client<E> {
 
     /// Try to join a room using a pending KeyPackage state.
     ///
-    /// Uses the most recently generated KeyPackage state. On success, the state
-    /// is consumed. On failure, the state is also consumed (caller should
-    /// generate a new KeyPackage if needed).
+    /// Tries each pending KeyPackage state until one succeeds. On success, the
+    /// matching state is consumed. On failure, all tried states are consumed
+    /// (caller should generate new KeyPackages if needed).
     fn try_join_from_welcome(
         &mut self,
         room_id: RoomId,
         welcome_bytes: &[u8],
     ) -> Result<(MlsGroup<E>, Vec<MlsAction>), ClientError> {
         let pending_hashes: Vec<Vec<u8>> = self.pending_joins.keys().cloned().collect();
+
+        if pending_hashes.is_empty() {
+            return Err(ClientError::Mls {
+                reason: "No pending KeyPackage state available for Welcome".to_string(),
+            });
+        }
+
+        let mut last_error = None;
 
         for hash_ref in pending_hashes {
             if let Some(pending_state) = self.pending_joins.remove(&hash_ref) {
@@ -436,25 +444,28 @@ impl<E: Environment> Client<E> {
                     Ok(result) => {
                         return Ok(result);
                     },
-                    Err(_) => {
-                        // This pending state didn't work, but we can't put it back
-                        // since it was consumed by join_from_welcome
-                        // The user will need to generate a new KeyPackage if needed
-                        continue;
+                    Err(e) => {
+                        // KeyPackage didn't match this Welcome. State is consumed by
+                        // join_from_welcome, so we can't put it back. Try the next one.
+                        last_error = Some(e);
                     },
                 }
             }
         }
 
         Err(ClientError::Mls {
-            reason: "No pending join state worked for this Welcome".to_string(),
+            reason: format!(
+                "No pending KeyPackage matched this Welcome: {}",
+                last_error.map(|e| e.to_string()).unwrap_or_else(|| "unknown".to_string())
+            ),
         })
     }
 
     /// Handle incoming Welcome frame.
     ///
     /// When we receive a Welcome message from another member (who added us),
-    /// we process it to join the group.
+    /// we process it to join the group. If no matching KeyPackage is available,
+    /// emits `KeyPackageNeeded` so the caller can trigger republishing.
     fn handle_welcome(
         &mut self,
         room_id: RoomId,
@@ -464,7 +475,18 @@ impl<E: Environment> Client<E> {
             return Err(ClientError::RoomAlreadyExists { room_id });
         }
 
-        let (mls_group, mls_actions) = self.try_join_from_welcome(room_id, &frame.payload)?;
+        let (mls_group, mls_actions) = match self.try_join_from_welcome(room_id, &frame.payload) {
+            Ok(result) => result,
+            Err(e) => {
+                // No matching KeyPackage - signal caller to republish
+                return Ok(vec![
+                    ClientAction::Log {
+                        message: format!("Welcome for room {:x} failed: {}", room_id, e),
+                    },
+                    ClientAction::KeyPackageNeeded { reason: e.to_string() },
+                ]);
+            },
+        };
 
         let sender_keys = self.initialize_sender_keys(&mls_group)?;
         let my_leaf_index = mls_group.own_leaf_index();
@@ -1177,5 +1199,81 @@ mod tests {
             matches!(action, ClientAction::Log { message } if message.contains("Failed to add user"))
         }).collect();
         assert_eq!(failure_actions.len(), 2);
+    }
+
+    #[test]
+    fn welcome_without_pending_keypackage_emits_keypackage_needed() {
+        let env = TestEnv;
+        let identity = ClientIdentity::new(42);
+        let mut client = Client::new(env, identity);
+
+        // No pending KeyPackage - client never called generate_key_package
+
+        let room_id = 0x1234_u128;
+        let mut header = FrameHeader::new(Opcode::Welcome);
+        header.set_room_id(room_id);
+        let frame = Frame::new(header, vec![1, 2, 3, 4]); // Dummy welcome payload
+
+        let actions = client.handle(ClientEvent::FrameReceived(frame)).unwrap();
+
+        // Should return KeyPackageNeeded, not an error
+        assert!(
+            actions.iter().any(|a| matches!(a, ClientAction::KeyPackageNeeded { .. })),
+            "Expected KeyPackageNeeded action, got: {:?}",
+            actions
+        );
+
+        // Should also log the failure
+        assert!(actions.iter().any(|a| matches!(a, ClientAction::Log { message }
+            if message.contains("Welcome") && message.contains("failed"))));
+    }
+
+    #[test]
+    fn welcome_with_wrong_keypackage_emits_keypackage_needed() {
+        let env = TestEnv;
+        let identity = ClientIdentity::new(42);
+        let mut client = Client::new(env, identity);
+
+        // Generate a KeyPackage (creates pending state)
+        let (_kp_bytes, _hash_ref) = client.generate_key_package().unwrap();
+        assert_eq!(client.pending_joins.len(), 1);
+
+        // Send a Welcome that doesn't match our KeyPackage
+        let room_id = 0x1234_u128;
+        let mut header = FrameHeader::new(Opcode::Welcome);
+        header.set_room_id(room_id);
+        let frame = Frame::new(header, vec![1, 2, 3, 4]); // Invalid welcome
+
+        let actions = client.handle(ClientEvent::FrameReceived(frame)).unwrap();
+
+        // Pending state should be consumed (even though it failed)
+        assert_eq!(client.pending_joins.len(), 0);
+
+        // Should return KeyPackageNeeded for recovery
+        assert!(
+            actions.iter().any(|a| matches!(a, ClientAction::KeyPackageNeeded { .. })),
+            "Expected KeyPackageNeeded action, got: {:?}",
+            actions
+        );
+    }
+
+    #[test]
+    fn welcome_to_existing_room_returns_error() {
+        let env = TestEnv;
+        let identity = ClientIdentity::new(42);
+        let mut client = Client::new(env, identity);
+
+        let room_id = 0x1234_u128;
+        client.handle(ClientEvent::CreateRoom { room_id }).unwrap();
+
+        // Try to process Welcome for room we're already in
+        let mut header = FrameHeader::new(Opcode::Welcome);
+        header.set_room_id(room_id);
+        let frame = Frame::new(header, vec![1, 2, 3, 4]);
+
+        let result = client.handle(ClientEvent::FrameReceived(frame));
+
+        // This should be a hard error (protocol violation)
+        assert!(matches!(result, Err(ClientError::RoomAlreadyExists { .. })));
     }
 }
