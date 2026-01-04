@@ -161,6 +161,9 @@ impl Runtime {
                         }
 
                         let events = self.bridge.handle_frame(frame);
+                        self.send_outgoing_frames().await.unwrap_or_else(|e| {
+                            tracing::warn!("Failed to send outgoing frames after handling server frame: {:?}", e);
+                        });
                         self.process_bridge_events(events).await?
                     }
 
@@ -284,7 +287,8 @@ impl Runtime {
         }
 
         let session_id = hello_reply.session_id;
-        let actions = self.app.handle(AppEvent::Connected { session_id });
+        let sender_id = self.bridge.sender_id();
+        let actions = self.app.handle(AppEvent::Connected { session_id, sender_id });
         self.process_actions_blocking(actions).unwrap_or_else(|e| {
             tracing::warn!("Failed to process actions from Connected event: {:?}", e);
         });

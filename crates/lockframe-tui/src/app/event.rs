@@ -25,6 +25,8 @@ pub enum AppEvent {
     Connected {
         /// Application-layer session ID.
         session_id: u64,
+        /// Client's sender ID (use this for /add commands).
+        sender_id: u64,
     },
 
     /// Successfully joined a room.

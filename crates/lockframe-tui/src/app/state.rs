@@ -19,6 +19,8 @@ pub enum ConnectionState {
     Connected {
         /// Application-layer session ID.
         session_id: u64,
+        /// Client's sender ID (shareable identity for /add).
+        sender_id: u64,
     },
 }
 

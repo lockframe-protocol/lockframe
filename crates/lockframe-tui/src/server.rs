@@ -59,14 +59,14 @@ pub fn spawn_server(session_id: u64) -> ServerHandle {
 
                     let result = driver.process_event(ServerEvent::FrameReceived {
                         session_id,
-                        frame,
+                        frame: frame.clone(),
                     });
 
                     match result {
                         Ok(actions) => {
                             for action in actions {
-                                if let Err(e) = execute_action(&server_tx, action, session_id).await {
-                                    eprintln!("Server: action execution failed: {e}");
+                                if let Err(e) = execute_action(&server_tx, action, session_id, &mut driver).await {
+                                    tracing::error!(session_id, error = %e, "Action execution failed");
                                 }
                             }
                         }
@@ -92,6 +92,7 @@ async fn execute_action(
     tx: &mpsc::Sender<Frame>,
     action: ServerAction,
     our_session_id: u64,
+    driver: &mut ServerDriver<SystemEnv, MemoryStorage>,
 ) -> Result<(), String> {
     match action {
         ServerAction::SendToSession { session_id, frame } => {
@@ -107,9 +108,22 @@ async fn execute_action(
             }
         },
 
-        ServerAction::CloseConnection { .. }
-        | ServerAction::PersistFrame { .. }
-        | ServerAction::Log { .. } => {},
+        ServerAction::PersistFrame { room_id, log_index, frame } => {
+            if let Err(e) = driver.storage().store_frame(room_id, log_index, &frame) {
+                return Err(format!("Failed to persist frame: {}", e));
+            }
+        },
+
+        ServerAction::CloseConnection { .. } => {
+            // In simulation mode, we don't handle connection closing
+        },
+
+        ServerAction::Log { level, message, .. } => match level {
+            LogLevel::Debug => tracing::debug!("{}", message),
+            LogLevel::Info => tracing::info!("{}", message),
+            LogLevel::Warn => tracing::warn!("{}", message),
+            LogLevel::Error => tracing::error!("{}", message),
+        },
     }
 
     Ok(())

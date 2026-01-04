@@ -52,10 +52,14 @@ use zerocopy::FromBytes;
 
 /// Shared state for all connections.
 ///
-/// This holds the connection map for broadcasts and closes.
+/// This holds connection and stream maps for message routing.
 struct SharedState {
-    /// Map of connection ID to QUIC connection
+    /// Map of session ID to QUIC connection (for closing)
     connections: RwLock<HashMap<u64, QuinnConnection>>,
+    /// Map of session ID to persistent outbound stream
+    /// All messages to a client go through this single stream, ensuring
+    /// ordering.
+    outbound_streams: RwLock<HashMap<u64, tokio::sync::Mutex<quinn::SendStream>>>,
 }
 
 /// Server configuration for the production runtime.
@@ -113,9 +117,12 @@ impl Server {
     pub async fn run(self) -> Result<(), ServerError> {
         tracing::info!("Server starting on {}", self.transport.local_addr()?);
 
-        let driver = Arc::new(tokio::sync::Mutex::new(self.driver));
-        let shared = Arc::new(SharedState { connections: RwLock::new(HashMap::new()) });
         let env = self.env;
+        let driver = Arc::new(tokio::sync::Mutex::new(self.driver));
+        let shared = Arc::new(SharedState {
+            connections: RwLock::new(HashMap::new()),
+            outbound_streams: RwLock::new(HashMap::new()),
+        });
 
         loop {
             match self.transport.accept().await {
@@ -158,9 +165,19 @@ async fn handle_connection(
 
     tracing::debug!("New connection: {}", session_id);
 
+    let outbound_stream = conn
+        .open_uni()
+        .await
+        .map_err(|e| ServerError::Internal(format!("Failed to open outbound stream: {}", e)))?;
+
     {
         let mut connections = shared.connections.write().await;
         connections.insert(session_id, conn.clone());
+    }
+
+    {
+        let mut streams = shared.outbound_streams.write().await;
+        streams.insert(session_id, tokio::sync::Mutex::new(outbound_stream));
     }
 
     {
@@ -191,6 +208,11 @@ async fn handle_connection(
     {
         let mut connections = shared.connections.write().await;
         connections.remove(&session_id);
+    }
+
+    {
+        let mut streams = shared.outbound_streams.write().await;
+        streams.remove(&session_id);
     }
 
     {
@@ -284,14 +306,14 @@ async fn execute_actions(
     for action in actions {
         match action {
             ServerAction::SendToSession { session_id, frame } => {
-                let connections = shared.connections.read().await;
-                if let Some(conn) = connections.get(&session_id) {
-                    let mut buf = Vec::new();
-                    frame.encode(&mut buf).map_err(|e| ServerError::Protocol(e.to_string()))?;
+                let mut buf = Vec::new();
+                frame.encode(&mut buf).map_err(|e| ServerError::Protocol(e.to_string()))?;
 
-                    if let Ok(mut send) = conn.open_uni().await {
-                        let _ = send.write_all(&buf).await;
-                        let _ = send.finish();
+                let streams = shared.outbound_streams.read().await;
+                if let Some(stream_mutex) = streams.get(&session_id) {
+                    let mut stream = stream_mutex.lock().await;
+                    if let Err(e) = stream.write_all(&buf).await {
+                        tracing::warn!("SendToSession write failed for {}: {}", session_id, e);
                     }
                 } else {
                     tracing::warn!("SendToSession: session {} not found", session_id);
@@ -304,13 +326,17 @@ async fn execute_actions(
                 let mut buf = Vec::new();
                 frame.encode(&mut buf).map_err(|e| ServerError::Protocol(e.to_string()))?;
 
-                let connections = shared.connections.read().await;
+                let streams = shared.outbound_streams.read().await;
                 for session_id in sessions {
                     if Some(session_id) != exclude_session {
-                        if let Some(conn) = connections.get(&session_id) {
-                            if let Ok(mut send) = conn.open_uni().await {
-                                let _ = send.write_all(&buf).await;
-                                let _ = send.finish();
+                        if let Some(stream_mutex) = streams.get(&session_id) {
+                            let mut stream = stream_mutex.lock().await;
+                            if let Err(e) = stream.write_all(&buf).await {
+                                tracing::warn!(
+                                    "BroadcastToRoom write failed for {}: {}",
+                                    session_id,
+                                    e
+                                );
                             }
                         }
                     }

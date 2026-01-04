@@ -15,7 +15,7 @@ use std::{net::SocketAddr, sync::Arc, time::Duration};
 
 use bytes::BytesMut;
 use lockframe_proto::{ALPN_PROTOCOL, Frame, FrameHeader};
-use quinn::{ClientConfig, Endpoint, RecvStream, SendStream};
+use quinn::{ClientConfig, Endpoint, ReadExactError, RecvStream, SendStream};
 use thiserror::Error;
 use tokio::sync::mpsc;
 use zerocopy::FromBytes;
@@ -100,6 +100,8 @@ pub struct ConnectedClient {
     pub to_server: mpsc::Sender<Frame>,
     /// Receive frames from the server.
     pub from_server: mpsc::Receiver<Frame>,
+    /// Connection errors. Receiving an error means the connection is dead.
+    pub errors: mpsc::Receiver<TransportError>,
     /// Abort handle to stop the connection task.
     abort_handle: tokio::task::AbortHandle,
 }
@@ -161,12 +163,14 @@ pub async fn connect_with_config(
 
     let (to_server_tx, to_server_rx) = mpsc::channel::<Frame>(32);
     let (from_server_tx, from_server_rx) = mpsc::channel::<Frame>(32);
+    let (error_tx, error_rx) = mpsc::channel::<TransportError>(1);
 
-    let handle = tokio::spawn(run_connection(connection, to_server_rx, from_server_tx));
+    let handle = tokio::spawn(run_connection(connection, to_server_rx, from_server_tx, error_tx));
 
     Ok(ConnectedClient {
         to_server: to_server_tx,
         from_server: from_server_rx,
+        errors: error_rx,
         abort_handle: handle.abort_handle(),
     })
 }
@@ -176,79 +180,94 @@ async fn run_connection(
     connection: quinn::Connection,
     mut to_server: mpsc::Receiver<Frame>,
     from_server: mpsc::Sender<Frame>,
+    errors: mpsc::Sender<TransportError>,
 ) {
-    // Incoming unidirectional streams
     let conn_recv = connection.clone();
-    let from_server_clone = from_server.clone();
+    let recv_errors = errors.clone();
     let recv_handle = tokio::spawn(async move {
-        loop {
-            match conn_recv.accept_uni().await {
-                Ok(recv) => {
-                    let tx = from_server_clone.clone();
-                    tokio::spawn(async move {
-                        if let Err(e) = handle_incoming_stream(recv, tx).await {
-                            eprintln!("Incoming stream error: {e}");
-                        }
-                    });
-                },
-                Err(_) => break,
-            }
+        match conn_recv.accept_uni().await {
+            Ok(recv) => {
+                if let Err(e) = read_frames_loop(recv, from_server).await {
+                    let _ = recv_errors.send(e).await;
+                }
+            },
+            Err(e) => {
+                let err =
+                    TransportError::Connection(format!("failed to accept server stream: {e}"));
+                let _ = recv_errors.send(err).await;
+            },
         }
     });
 
-    // Outgoing frames
+    let (mut send, _recv) = match connection.open_bi().await {
+        Ok(streams) => streams,
+        Err(e) => {
+            let err = TransportError::Connection(format!("failed to open outbound stream: {e}"));
+            let _ = errors.send(err).await;
+            recv_handle.abort();
+            return;
+        },
+    };
+
     while let Some(frame) = to_server.recv().await {
-        if let Ok((send, _recv)) = connection.open_bi().await {
-            if let Err(e) = send_frame(send, &frame).await {
-                eprintln!("Send error: {e}");
-            }
+        if let Err(e) = write_frame(&mut send, &frame).await {
+            let _ = errors.send(e).await;
+            break;
         }
     }
 
+    let _ = send.finish();
     recv_handle.abort();
 }
 
-/// Handle an incoming unidirectional stream (server -> client).
-async fn handle_incoming_stream(
+/// Read frames from a persistent stream until it closes.
+async fn read_frames_loop(
     mut recv: RecvStream,
     tx: mpsc::Sender<Frame>,
 ) -> Result<(), TransportError> {
     let mut buf = BytesMut::with_capacity(65536);
 
-    buf.resize(FrameHeader::SIZE, 0);
-    recv.read_exact(&mut buf[..FrameHeader::SIZE])
-        .await
-        .map_err(|e| TransportError::Stream(format!("header read failed: {e}")))?;
+    loop {
+        buf.clear();
+        buf.resize(FrameHeader::SIZE, 0);
 
-    let header: &FrameHeader = FrameHeader::ref_from_bytes(&buf[..FrameHeader::SIZE])
-        .map_err(|e| TransportError::Protocol(format!("invalid header: {e}")))?;
+        match recv.read_exact(&mut buf[..FrameHeader::SIZE]).await {
+            Ok(()) => {},
+            Err(ReadExactError::FinishedEarly(0)) => {
+                return Ok(());
+            },
+            Err(e) => {
+                return Err(TransportError::Stream(format!("header read failed: {e}")));
+            },
+        }
 
-    let payload_size = header.payload_size() as usize;
+        let header: &FrameHeader = FrameHeader::ref_from_bytes(&buf[..FrameHeader::SIZE])
+            .map_err(|e| TransportError::Protocol(format!("invalid header: {e}")))?;
 
-    if payload_size > 0 {
-        buf.resize(FrameHeader::SIZE + payload_size, 0);
-        recv.read_exact(&mut buf[FrameHeader::SIZE..])
+        let payload_size = header.payload_size() as usize;
+
+        if payload_size > 0 {
+            buf.resize(FrameHeader::SIZE + payload_size, 0);
+            recv.read_exact(&mut buf[FrameHeader::SIZE..])
+                .await
+                .map_err(|e| TransportError::Stream(format!("payload read failed: {e}")))?;
+        }
+
+        let frame = Frame::decode(&buf)
+            .map_err(|e| TransportError::Protocol(format!("frame decode failed: {e}")))?;
+
+        tx.send(frame)
             .await
-            .map_err(|e| TransportError::Stream(format!("payload read failed: {e}")))?;
+            .map_err(|e| TransportError::Stream(format!("channel send failed: {e}")))?;
     }
-
-    let frame = Frame::decode(&buf)
-        .map_err(|e| TransportError::Protocol(format!("frame decode failed: {e}")))?;
-
-    tx.send(frame)
-        .await
-        .map_err(|e| TransportError::Stream(format!("channel send failed: {e}")))?;
-
-    Ok(())
 }
 
-/// Send a frame on a stream.
-async fn send_frame(mut send: SendStream, frame: &Frame) -> Result<(), TransportError> {
+/// Write a frame to a persistent stream
+async fn write_frame(send: &mut SendStream, frame: &Frame) -> Result<(), TransportError> {
     let mut buf = Vec::new();
     frame.encode(&mut buf).map_err(|e| TransportError::Protocol(format!("encode failed: {e}")))?;
 
     send.write_all(&buf).await.map_err(|e| TransportError::Stream(format!("write failed: {e}")))?;
-    send.finish().map_err(|e| TransportError::Stream(format!("finish failed: {e}")))?;
 
     Ok(())
 }

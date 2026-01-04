@@ -72,8 +72,8 @@ impl App {
                 self.state = ConnectionState::Connecting;
                 vec![AppAction::Render]
             },
-            AppEvent::Connected { session_id } => {
-                self.state = ConnectionState::Connected { session_id };
+            AppEvent::Connected { session_id, sender_id } => {
+                self.state = ConnectionState::Connected { session_id, sender_id };
                 vec![AppAction::Render]
             },
             AppEvent::RoomJoined { room_id } => {
@@ -208,6 +208,10 @@ impl App {
                 ]
             },
             "create" => {
+                if parts.get(1).is_none() {
+                    self.status_message = Some("Usage: /create <room_id>".into());
+                    return vec![AppAction::Render];
+                }
                 if let Some(room_id_str) = parts.get(1) {
                     if let Ok(room_id) = room_id_str.parse::<u128>() {
                         self.status_message = Some(format!("Creating room {room_id}..."));
@@ -339,7 +343,7 @@ mod tests {
 
     fn new_connected_app() -> App {
         let mut app = App::new("localhost:8080".to_string());
-        app.state = ConnectionState::Connected { session_id: 1 };
+        app.state = ConnectionState::Connected { session_id: 1, sender_id: 42 };
         app
     }
 

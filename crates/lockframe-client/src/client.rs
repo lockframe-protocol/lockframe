@@ -77,37 +77,35 @@ struct RoomState<E: Environment> {
 /// State stored between KeyPackage generation and Welcome receipt.
 type PendingJoin<E> = PendingJoinState<E>;
 
-/// Client state machine.
-///
-/// Manages multiple room memberships and handles message encryption/decryption.
+/// Client for interacting with LockFrame server.
 pub struct Client<E: Environment> {
-    /// Our persistent identity.
+    /// Environment for randomness, timing, etc.
+    env: E,
+
+    /// Client identity.
     identity: ClientIdentity,
 
     /// Active room memberships.
     rooms: HashMap<RoomId, RoomState<E>>,
 
-    /// Pending join attempts (KeyPackage generated, waiting for Welcome).
-    /// Each entry contains the crypto state needed to decrypt a Welcome.
-    pending_joins: Vec<PendingJoin<E>>,
+    /// Pending joins awaiting Welcome frames.
+    /// Maps KeyPackage hash to pending state.
+    pending_joins: HashMap<Vec<u8>, PendingJoin<E>>,
 
     /// Pending add member operations.
     /// Maps (room_id, user_id) to timestamp for completing the add.
     pending_adds: HashMap<(RoomId, u64), Instant>,
-
-    /// Environment for time/randomness.
-    env: E,
 }
 
 impl<E: Environment> Client<E> {
     /// Create a new client with the given identity.
     pub fn new(env: E, identity: ClientIdentity) -> Self {
         Self {
+            env,
             identity,
             rooms: HashMap::new(),
-            pending_joins: Vec::new(),
+            pending_joins: HashMap::new(),
             pending_adds: HashMap::new(),
-            env,
         }
     }
 
@@ -143,7 +141,7 @@ impl<E: Environment> Client<E> {
             MlsGroup::generate_key_package(self.env.clone(), self.identity.sender_id)
                 .map_err(|e| ClientError::Mls { reason: e.to_string() })?;
 
-        self.pending_joins.push(pending_state);
+        self.pending_joins.insert(hash_ref.clone(), pending_state);
 
         Ok((kp_bytes, hash_ref))
     }
@@ -235,10 +233,16 @@ impl<E: Environment> Client<E> {
         let encrypted = crypto_to_proto_encrypted(&crypto_encrypted);
         let payload = serialize_encrypted_message(&encrypted);
 
+        let payload_len: u32 = payload
+            .len()
+            .try_into()
+            .map_err(|_| ClientError::InvalidFrame { reason: "Payload too large".to_string() })?;
+
         let mut header = FrameHeader::new(Opcode::AppMessage);
         header.set_room_id(room_id);
         header.set_sender_id(self.identity.sender_id);
         header.set_epoch(room.mls_group.epoch());
+        header.set_payload_size(payload_len);
 
         room.mls_group.sign_frame_header(&mut header);
 
@@ -255,6 +259,13 @@ impl<E: Environment> Client<E> {
         })?;
 
         match opcode {
+            Opcode::HelloReply | Opcode::Pong => {
+                // Ignore session-level responses (handled at transport layer)
+                Ok(vec![])
+            },
+            Opcode::Error => Ok(vec![ClientAction::Log {
+                message: format!("Server error: room_id={:x}", room_id),
+            }]),
             Opcode::AppMessage => self.handle_app_message(room_id, frame),
             Opcode::Commit => self.handle_commit(room_id, frame),
             Opcode::Welcome => self.handle_welcome(room_id, frame),
@@ -266,7 +277,7 @@ impl<E: Environment> Client<E> {
 
                 let mls_actions = room
                     .mls_group
-                    .process_message(frame)
+                    .process_message(frame.clone())
                     .map_err(|e| ClientError::Mls { reason: e.to_string() })?;
 
                 Ok(self.convert_mls_actions(room_id, mls_actions))
@@ -284,8 +295,21 @@ impl<E: Environment> Client<E> {
 
         let frame_epoch = frame.header.epoch();
         let room_epoch = room.mls_group.epoch();
+
         if frame_epoch != room_epoch {
-            return Err(ClientError::EpochMismatch { expected: room_epoch, actual: frame_epoch });
+            return Ok(vec![
+                ClientAction::Log {
+                    message: format!(
+                        "Epoch mismatch for room {:x}: frame {}, room {}. Requesting sync.",
+                        room_id, frame_epoch, room_epoch
+                    ),
+                },
+                ClientAction::RequestSync {
+                    room_id,
+                    from_epoch: room_epoch,
+                    to_epoch: frame_epoch,
+                },
+            ]);
         }
 
         let validation_state = room.mls_group.export_validation_state();
@@ -337,10 +361,14 @@ impl<E: Environment> Client<E> {
         room_id: RoomId,
         frame: Frame,
     ) -> Result<Vec<ClientAction>, ClientError> {
+        if !self.rooms.contains_key(&room_id) {
+            return Err(ClientError::RoomNotFound { room_id });
+        }
+
         let is_own_commit = frame.header.sender_id() == self.identity.sender_id;
 
         let mut actions = {
-            let room = self.rooms.get_mut(&room_id).ok_or(ClientError::RoomNotFound { room_id })?;
+            let room = self.rooms.get_mut(&room_id).expect("checked above");
 
             if is_own_commit && room.mls_group.has_pending_commit() {
                 room.mls_group
@@ -348,17 +376,18 @@ impl<E: Environment> Client<E> {
                     .map_err(|e| ClientError::Mls { reason: e.to_string() })?;
                 Vec::new()
             } else {
+                // Process the Commit even if we don't have a pending commit.
+                // This handles the race condition where we receive our own Commit back
+                // before the original send operation consumed the pending commit.
                 let mls_actions = room
                     .mls_group
-                    .process_message(frame)
+                    .process_message(frame.clone())
                     .map_err(|e| ClientError::Mls { reason: e.to_string() })?;
+
                 self.convert_mls_actions(room_id, mls_actions)
             }
         };
 
-        // Re-derive sender keys for new epoch from MLS state
-        // We need to export the secret while holding only an immutable borrow,
-        // then update the room state afterward
         let (new_sender_keys, new_leaf_index, epoch, my_leaf_index) = {
             let room = self.rooms.get(&room_id).ok_or(ClientError::RoomNotFound { room_id })?;
             let sender_keys = self.initialize_sender_keys(&room.mls_group)?;
@@ -394,12 +423,32 @@ impl<E: Environment> Client<E> {
         room_id: RoomId,
         welcome_bytes: &[u8],
     ) -> Result<(MlsGroup<E>, Vec<MlsAction>), ClientError> {
-        let pending_state = self.pending_joins.pop().ok_or_else(|| ClientError::Mls {
-            reason: "No pending KeyPackage state - call generate_key_package first".to_string(),
-        })?;
+        let pending_hashes: Vec<Vec<u8>> = self.pending_joins.keys().cloned().collect();
 
-        MlsGroup::join_from_welcome(room_id, self.identity.sender_id, welcome_bytes, pending_state)
-            .map_err(|e| ClientError::Mls { reason: e.to_string() })
+        for hash_ref in pending_hashes {
+            if let Some(pending_state) = self.pending_joins.remove(&hash_ref) {
+                match MlsGroup::join_from_welcome(
+                    room_id,
+                    self.identity.sender_id,
+                    welcome_bytes,
+                    pending_state,
+                ) {
+                    Ok(result) => {
+                        return Ok(result);
+                    },
+                    Err(_) => {
+                        // This pending state didn't work, but we can't put it back
+                        // since it was consumed by join_from_welcome
+                        // The user will need to generate a new KeyPackage if needed
+                        continue;
+                    },
+                }
+            }
+        }
+
+        Err(ClientError::Mls {
+            reason: "No pending join state worked for this Welcome".to_string(),
+        })
     }
 
     /// Handle incoming Welcome frame.
@@ -421,10 +470,30 @@ impl<E: Environment> Client<E> {
         let my_leaf_index = mls_group.own_leaf_index();
 
         let room_state = RoomState { mls_group, sender_keys, my_leaf_index };
+        let current_epoch = room_state.mls_group.epoch();
+
+        let mls_state = room_state
+            .mls_group
+            .export_state()
+            .map_err(|e| ClientError::Mls { reason: e.to_string() })?;
+
+        let snapshot = crate::event::RoomStateSnapshot {
+            room_id,
+            epoch: current_epoch,
+            mls_state,
+            my_leaf_index: room_state.my_leaf_index,
+        };
+
         self.rooms.insert(room_id, room_state);
 
         let mut actions = self.convert_mls_actions(room_id, mls_actions);
         actions.push(ClientAction::Log { message: format!("Joined room {room_id:x} via Welcome") });
+        actions.push(ClientAction::PersistRoom(snapshot));
+        actions.push(ClientAction::RequestSync {
+            room_id,
+            from_epoch: current_epoch,
+            to_epoch: current_epoch,
+        });
 
         Ok(actions)
     }

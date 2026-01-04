@@ -139,13 +139,36 @@ impl<E: Environment> Bridge<E> {
                 },
 
                 ClientAction::PersistRoom(snapshot) => {
-                    if snapshot.epoch == 0 {
-                        events.push(AppEvent::RoomJoined { room_id: snapshot.room_id });
+                    events.push(AppEvent::RoomJoined { room_id: snapshot.room_id });
+                },
+
+                ClientAction::RequestSync { from_epoch, .. } => {
+                    // from_epoch maps to from_log_index: both are monotonic counters
+                    // starting at 0. The server sequences all frames, so log_index
+                    // tracks the total order. Epochs advance on MLS commits, which
+                    // are a subset of sequenced frames - so from_epoch is a valid
+                    // lower bound for catching up.
+                    let payload = lockframe_proto::payloads::session::SyncRequest {
+                        from_log_index: from_epoch,
+                        limit: 100,
+                    };
+
+                    match lockframe_proto::Payload::SyncRequest(payload).into_frame(
+                        lockframe_proto::FrameHeader::new(lockframe_proto::Opcode::SyncRequest),
+                    ) {
+                        Ok(frame) => self.outgoing.push(frame),
+                        Err(e) => {
+                            tracing::error!(
+                                from_epoch,
+                                error = %e,
+                                "Failed to create SyncRequest frame"
+                            );
+                        },
                     }
                 },
 
-                ClientAction::RequestSync { .. } | ClientAction::Log { .. } => {
-                    // Handled internally or logged, no UI event needed
+                ClientAction::Log { .. } => {
+                    // Handled internally, no UI event needed
                 },
 
                 ClientAction::MemberAdded { room_id, user_id } => {
