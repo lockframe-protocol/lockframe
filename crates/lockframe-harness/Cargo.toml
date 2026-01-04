@@ -29,6 +29,9 @@ rand_chacha = "0.3"
 # For model-based testing operations
 arbitrary = { version = "1.4", features = ["derive"] }
 
+# Logging
+tracing = "0.1"
+
 [dev-dependencies]
 # Client for E2E tests
 lockframe-client = { path = "../lockframe-client" }

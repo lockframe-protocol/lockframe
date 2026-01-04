@@ -119,7 +119,7 @@ impl SimServer {
 
                 ServerAction::PersistFrame { room_id, log_index, frame } => {
                     if let Err(e) = self.driver.storage().store_frame(room_id, log_index, &frame) {
-                        eprintln!("[ERROR] Failed to persist frame: {}", e);
+                        tracing::error!(room_id, log_index, error = %e, "Failed to persist frame");
                     }
                 },
 
@@ -156,10 +156,10 @@ impl SimServer {
     /// Log a message.
     fn log(&self, level: LogLevel, message: &str) {
         match level {
-            LogLevel::Debug => eprintln!("[DEBUG] {}", message),
-            LogLevel::Info => eprintln!("[INFO] {}", message),
-            LogLevel::Warn => eprintln!("[WARN] {}", message),
-            LogLevel::Error => eprintln!("[ERROR] {}", message),
+            LogLevel::Debug => tracing::debug!("{}", message),
+            LogLevel::Info => tracing::info!("{}", message),
+            LogLevel::Warn => tracing::warn!("{}", message),
+            LogLevel::Error => tracing::error!("{}", message),
         }
     }
 

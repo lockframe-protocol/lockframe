@@ -6,7 +6,8 @@
 
 use lockframe_proto::Frame;
 use lockframe_server::{
-    DriverConfig, MemoryStorage, ServerAction, ServerDriver, ServerEvent, SystemEnv,
+    DriverConfig, LogLevel, MemoryStorage, ServerAction, ServerDriver, ServerEvent, Storage,
+    SystemEnv,
 };
 use tokio::sync::mpsc;
 
@@ -41,7 +42,7 @@ pub fn spawn_server(session_id: u64) -> ServerHandle {
         let mut driver = ServerDriver::new(env, storage, DriverConfig::default());
 
         if let Err(e) = driver.process_event(ServerEvent::ConnectionAccepted { session_id }) {
-            eprintln!("Server: connection accept failed: {e}");
+            tracing::error!(session_id, error = %e, "Connection accept failed");
             return;
         }
 
@@ -52,7 +53,7 @@ pub fn spawn_server(session_id: u64) -> ServerHandle {
                     if room_id != 0 && !driver.has_room(room_id) {
                         // Auto-create room if it doesn't exist
                         if let Err(e) = driver.create_room(room_id, session_id) {
-                            eprintln!("Server: room creation failed: {e}");
+                            tracing::error!(room_id, error = %e, "Room creation failed");
                         }
                     }
 
@@ -70,7 +71,7 @@ pub fn spawn_server(session_id: u64) -> ServerHandle {
                             }
                         }
                         Err(e) => {
-                            eprintln!("Server: frame processing failed: {e}");
+                            tracing::error!(session_id, error = %e, "Frame processing failed");
                         }
                     }
                 }

@@ -106,7 +106,7 @@ fn server_handles_hello_handshake() {
         match tokio::time::timeout(Duration::from_millis(100), stream.read(&mut buf)).await {
             Ok(Ok(n)) if n > 0 => {
                 // Got some data - likely HelloReply
-                eprintln!("Client received {} bytes", n);
+                tracing::debug!(bytes = n, "Client received response");
             },
             _ => {
                 // Timeout or no data - that's ok for this test
