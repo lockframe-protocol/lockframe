@@ -28,16 +28,12 @@ use lockframe_core::env::Environment;
 /// generating session IDs, nonces, ephemeral keys, and other security-critical
 /// values.
 ///
-/// If the OS RNG fails (extremely rare), random_bytes() falls back to zeros and
-/// logs an error. In production, this fallback should be treated as a critical
-/// error - consider panicking or shutting down gracefully instead.
-///
 /// # Panics
 ///
-/// Currently does not panic on RNG failure (logs error and fills with zeros).
-/// This is a deliberate choice to avoid crashes, but production deployments
-/// should monitor for "getrandom failed" log messages and treat them as
-/// critical incidents.
+/// Panics if the OS RNG fails. This is intentional - a server without
+/// functioning cryptographic randomness cannot operate securely. RNG failure
+/// is extremely rare (indicates OS-level issues) and continuing would
+/// compromise session IDs, nonces, and all cryptographic operations.
 #[derive(Clone, Default)]
 pub struct SystemEnv;
 
@@ -59,13 +55,8 @@ impl Environment for SystemEnv {
     }
 
     fn random_bytes(&self, buffer: &mut [u8]) {
-        getrandom::fill(buffer).unwrap_or_else(|e| {
-            // NOTE: This should never fail on supported platforms, if it does it's a
-            // critical error. In production, we should handle this more gracefully.
-            // Fill with zeros as a fallback (not secure, but prevents panic)
-            tracing::error!("getrandom failed: {}", e);
-            buffer.fill(0);
-        });
+        getrandom::fill(buffer)
+            .expect("OS RNG failure is unrecoverable - server cannot operate securely");
     }
 }
 
