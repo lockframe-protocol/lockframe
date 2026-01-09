@@ -82,6 +82,10 @@ pub enum Payload {
     KeyPackagePublish(mls::KeyPackagePublishRequest),
     /// Fetch KeyPackage from server registry
     KeyPackageFetch(mls::KeyPackageFetchPayload),
+    /// Request GroupInfo for external join
+    GroupInfoRequest(mls::GroupInfoRequest),
+    /// GroupInfo response for external join
+    GroupInfo(mls::GroupInfoPayload),
 
     // Application Messages
     /// Encrypted application message
@@ -194,6 +198,8 @@ impl Payload {
             Self::Welcome(_) => Opcode::Welcome,
             Self::KeyPackagePublish(_) => Opcode::KeyPackagePublish,
             Self::KeyPackageFetch(_) => Opcode::KeyPackageFetch,
+            Self::GroupInfoRequest(_) => Opcode::GroupInfoRequest,
+            Self::GroupInfo(_) => Opcode::GroupInfo,
             Self::AppMessage(_) => Opcode::AppMessage,
             Self::AppReceipt(_) => Opcode::AppReceipt,
             Self::AppReaction(_) => Opcode::AppReaction,
@@ -239,6 +245,8 @@ impl Payload {
             Self::Welcome(inner) => ciborium::ser::into_writer(inner, &mut writer),
             Self::KeyPackagePublish(inner) => ciborium::ser::into_writer(inner, &mut writer),
             Self::KeyPackageFetch(inner) => ciborium::ser::into_writer(inner, &mut writer),
+            Self::GroupInfoRequest(inner) => ciborium::ser::into_writer(inner, &mut writer),
+            Self::GroupInfo(inner) => ciborium::ser::into_writer(inner, &mut writer),
             Self::AppMessage(inner) => ciborium::ser::into_writer(inner, &mut writer),
             Self::AppReceipt(inner) => ciborium::ser::into_writer(inner, &mut writer),
             Self::AppReaction(inner) => ciborium::ser::into_writer(inner, &mut writer),
@@ -322,6 +330,14 @@ impl Payload {
                     .map_err(|e| ProtocolError::CborDecode(e.to_string()))?,
             ),
             Opcode::KeyPackageFetch => Self::KeyPackageFetch(
+                ciborium::de::from_reader(bytes)
+                    .map_err(|e| ProtocolError::CborDecode(e.to_string()))?,
+            ),
+            Opcode::GroupInfoRequest => Self::GroupInfoRequest(
+                ciborium::de::from_reader(bytes)
+                    .map_err(|e| ProtocolError::CborDecode(e.to_string()))?,
+            ),
+            Opcode::GroupInfo => Self::GroupInfo(
                 ciborium::de::from_reader(bytes)
                     .map_err(|e| ProtocolError::CborDecode(e.to_string()))?,
             ),

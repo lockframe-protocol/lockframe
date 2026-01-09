@@ -70,6 +70,8 @@ pub enum Opcode {
     KeyPackagePublish = 0x1008,
     /// Fetch KeyPackage from registry (client → server, server → client)
     KeyPackageFetch = 0x1009,
+    /// Request GroupInfo for external join (client → server)
+    GroupInfoRequest = 0x100A,
 
     // Application Messages (0x2000-0x2FFF)
     /// Encrypted application message
@@ -168,6 +170,7 @@ impl Opcode {
             0x1007 => Some(Self::ExternalCommit),
             0x1008 => Some(Self::KeyPackagePublish),
             0x1009 => Some(Self::KeyPackageFetch),
+            0x100A => Some(Self::GroupInfoRequest),
 
             0x2000 => Some(Self::AppMessage),
             0x2001 => Some(Self::AppReceipt),

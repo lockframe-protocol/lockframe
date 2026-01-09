@@ -152,6 +152,45 @@ pub struct KeyPackageFetchPayload {
     pub hash_ref: Vec<u8>,
 }
 
+/// Request GroupInfo for external join.
+///
+/// Sent by a client who wants to join a room via external commit.
+///
+/// # Protocol Flow
+///
+/// 1. Client wants to join room without being invited
+/// 2. Client sends GroupInfoRequest with target room_id
+/// 3. Server looks up the latest GroupInfo for that room
+/// 4. Server responds with GroupInfoPayload containing the GroupInfo
+/// 5. Client uses GroupInfo to create an external commit
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GroupInfoRequest {
+    /// Room ID to fetch GroupInfo for.
+    pub room_id: u128,
+}
+
+/// GroupInfo for external joins (MLS RFC 9420 §12.4.3.1).
+///
+/// Contains the public group state needed to create an external commit.
+///
+/// # Protocol Flow
+///
+/// Sent by the server in response to GroupInfoRequest:
+/// 1. Server receives GroupInfoRequest for a room
+/// 2. Server fetches the latest GroupInfo from storage
+/// 3. Server sends GroupInfoPayload to the requesting client
+/// 4. Client creates an external commit using the GroupInfo
+/// 5. Client sends external commit to join the room
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GroupInfoPayload {
+    /// Room this GroupInfo belongs to.
+    pub room_id: u128,
+    /// Current MLS epoch when this GroupInfo was generated.
+    pub epoch: u64,
+    /// TLS-serialized MLS GroupInfo (from openmls).
+    pub group_info_bytes: Vec<u8>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -210,5 +249,28 @@ mod tests {
 
         let decoded: KeyPackageFetchPayload = ciborium::de::from_reader(&buf[..]).unwrap();
         assert_eq!(response, decoded);
+    }
+
+    #[test]
+    fn group_info_request_serde() {
+        let request = GroupInfoRequest { room_id: 42 };
+
+        let mut buf = Vec::new();
+        ciborium::ser::into_writer(&request, &mut buf).unwrap();
+
+        let decoded: GroupInfoRequest = ciborium::de::from_reader(&buf[..]).unwrap();
+        assert_eq!(request, decoded);
+    }
+
+    #[test]
+    fn group_info_payload_serde() {
+        let payload =
+            GroupInfoPayload { room_id: 42, epoch: 5, group_info_bytes: vec![1, 2, 3, 4, 5] };
+
+        let mut buf = Vec::new();
+        ciborium::ser::into_writer(&payload, &mut buf).unwrap();
+
+        let decoded: GroupInfoPayload = ciborium::de::from_reader(&buf[..]).unwrap();
+        assert_eq!(payload, decoded);
     }
 }
