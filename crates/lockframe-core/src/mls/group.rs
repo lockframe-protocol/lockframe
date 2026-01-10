@@ -3,7 +3,10 @@
 use std::{collections::HashMap, time::Duration};
 
 use lockframe_proto::{Frame, FrameHeader, Opcode};
-use openmls::{key_packages::KeyPackageIn, prelude::*};
+use openmls::{
+    key_packages::KeyPackageIn,
+    prelude::{MlsMessageIn, *},
+};
 use openmls_basic_credential::SignatureKeyPair;
 use openmls_traits::signatures::Signer;
 use tls_codec::{Deserialize, Serialize};
@@ -66,6 +69,16 @@ pub enum MlsAction {
     RemoveGroup {
         /// Reason for removal
         reason: String,
+    },
+
+    /// Publish GroupInfo so external joiners can fetch it
+    PublishGroupInfo {
+        /// Room this GroupInfo belongs to
+        room_id: RoomId,
+        /// Current epoch when this GroupInfo was generated
+        epoch: u64,
+        /// TLS-serialized MLS GroupInfo
+        group_info_bytes: Vec<u8>,
     },
 
     /// Log event for debugging/monitoring
@@ -169,9 +182,15 @@ impl<E: Environment> MlsGroup<E> {
 
         let group = Self { room_id, member_id, mls_group, signer, provider, pending_commit: None };
 
-        let actions = vec![MlsAction::Log {
-            message: format!("Created group {} at epoch 0 (member_id={})", room_id, member_id),
-        }];
+        // Export GroupInfo so external joiners can join immediately
+        let group_info_bytes = group.export_group_info()?;
+
+        let actions = vec![
+            MlsAction::PublishGroupInfo { room_id, epoch: 0, group_info_bytes },
+            MlsAction::Log {
+                message: format!("Created group {} at epoch 0 (member_id={})", room_id, member_id),
+            },
+        ];
 
         Ok((group, actions))
     }
@@ -555,6 +574,27 @@ impl<E: Environment> MlsGroup<E> {
         ))
     }
 
+    /// Export GroupInfo for external joiners.
+    ///
+    /// Creates a signed GroupInfo that external clients can use to join via
+    /// external commit. The GroupInfo includes the ratchet tree if configured.
+    ///
+    /// # MLS External Joins (RFC 9420 §12.4.3.1)
+    ///
+    /// GroupInfo is the public group state needed to create an external commit.
+    /// It must be exported after each epoch change (commit) so external joiners
+    /// have current state.
+    pub fn export_group_info(&self) -> Result<Vec<u8>, MlsError> {
+        let group_info = self
+            .mls_group
+            .export_group_info(self.provider.crypto(), &self.signer, true)
+            .map_err(|e| MlsError::Crypto(format!("Failed to export GroupInfo: {}", e)))?;
+
+        group_info
+            .tls_serialize_detached()
+            .map_err(|e| MlsError::Serialization(format!("Failed to serialize GroupInfo: {}", e)))
+    }
+
     /// Generate a KeyPackage for joining groups.
     ///
     /// Creates a KeyPackage that can be shared with group members who want to
@@ -625,7 +665,7 @@ impl<E: Environment> MlsGroup<E> {
             _ => return Err(MlsError::Serialization("Message is not a Welcome".to_string())),
         };
 
-        let group_config = MlsGroupJoinConfig::builder().build();
+        let group_config = MlsGroupJoinConfig::builder().use_ratchet_tree_extension(true).build();
 
         let mls_group = StagedWelcome::new_from_welcome(&provider, &group_config, welcome, None)
             .map_err(|e| MlsError::Crypto(format!("Failed to stage Welcome: {}", e)))?
@@ -645,6 +685,79 @@ impl<E: Environment> MlsGroup<E> {
         Ok((group, actions))
     }
 
+    /// Join a group via external commit using GroupInfo.
+    ///
+    /// Creates a new MlsGroup instance by creating an external commit from
+    /// publicly available GroupInfo. Unlike `join_from_welcome`, this doesn't
+    /// require an invitation - the joiner initiates the join themselves.
+    ///
+    /// # MLS External Commits (RFC 9420 §12.4)
+    ///
+    /// External commits allow a client with access to the group's public state
+    /// (GroupInfo) to add themselves without being explicitly invited. The
+    /// resulting commit must be sent to the group and accepted by the
+    /// sequencer.
+    pub fn join_from_external(
+        env: E,
+        room_id: RoomId,
+        member_id: MemberId,
+        group_info_bytes: &[u8],
+    ) -> Result<(Self, Vec<MlsAction>), MlsError> {
+        let provider = MlsProvider::new(env);
+        let ciphersuite = Ciphersuite::MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519;
+
+        let signer = SignatureKeyPair::new(ciphersuite.signature_algorithm())
+            .map_err(|e| MlsError::Crypto(format!("Failed to generate keypair: {}", e)))?;
+
+        let credential = BasicCredential::new(member_id.to_le_bytes().to_vec());
+        let credential_with_key = CredentialWithKey {
+            credential: credential.into(),
+            signature_key: signer.public().into(),
+        };
+
+        let mls_message_in = MlsMessageIn::tls_deserialize(&mut group_info_bytes.as_ref())
+            .map_err(|e| {
+                MlsError::Serialization(format!("Failed to deserialize GroupInfo message: {}", e))
+            })?;
+
+        let verifiable_group_info = mls_message_in
+            .into_verifiable_group_info()
+            .ok_or_else(|| MlsError::Serialization("Message is not a GroupInfo".to_string()))?;
+
+        let (mls_group, commit_bundle) = openmls::group::MlsGroup::external_commit_builder()
+            .build_group(&provider, verifiable_group_info, credential_with_key)
+            .map_err(|e| MlsError::Crypto(format!("Failed to build external commit group: {}", e)))?
+            .load_psks(provider.storage())
+            .map_err(|e| MlsError::Crypto(format!("Failed to load PSKs: {}", e)))?
+            .build(provider.rand(), provider.crypto(), &signer, |_| true)
+            .map_err(|e| MlsError::Crypto(format!("Failed to build external commit: {}", e)))?
+            .finalize(&provider)
+            .map_err(|e| MlsError::Crypto(format!("Failed to finalize external commit: {}", e)))?;
+
+        let epoch = mls_group.epoch().as_u64();
+
+        let commit_payload = commit_bundle
+            .commit()
+            .tls_serialize_detached()
+            .map_err(|e| MlsError::Serialization(format!("Failed to serialize commit: {}", e)))?;
+
+        let mut commit_header = FrameHeader::new(Opcode::ExternalCommit);
+        commit_header.set_room_id(room_id);
+        commit_header.set_sender_id(member_id);
+        let commit_frame = Frame::new(commit_header, commit_payload);
+
+        let group = Self { room_id, member_id, mls_group, signer, provider, pending_commit: None };
+
+        let actions = vec![MlsAction::SendCommit(commit_frame), MlsAction::Log {
+            message: format!(
+                "Created external commit to join room {} at epoch {} (member_id={})",
+                room_id, epoch, member_id
+            ),
+        }];
+
+        Ok((group, actions))
+    }
+
     /// Add members to the group by their KeyPackages.
     ///
     /// Creates a commit that adds the specified members to the group. The
@@ -654,7 +767,7 @@ impl<E: Environment> MlsGroup<E> {
         let target_epoch = self.epoch() + 1;
         let now = self.provider.now();
 
-        let (mls_message_out, welcome, _group_info) = self
+        let (mls_message_out, welcome, group_info) = self
             .mls_group
             .add_members(&self.provider, &self.signer, &key_packages)
             .map_err(|e| MlsError::Crypto(format!("Failed to add members: {}", e)))?;
@@ -662,6 +775,16 @@ impl<E: Environment> MlsGroup<E> {
         self.pending_commit = Some(PendingCommit { target_epoch, sent_at: now });
 
         let mut actions = Vec::new();
+
+        let group_info_bytes = group_info.tls_serialize_detached().map_err(|e| {
+            MlsError::Serialization(format!("Failed to serialize GroupInfo: {}", e))
+        })?;
+
+        actions.push(MlsAction::PublishGroupInfo {
+            room_id: self.room_id,
+            epoch: target_epoch,
+            group_info_bytes,
+        });
 
         let commit_payload = mls_message_out
             .tls_serialize_detached()
@@ -716,7 +839,7 @@ impl<E: Environment> MlsGroup<E> {
 
         let leaf_indices = self.member_ids_to_leaf_indices(member_ids)?;
 
-        let (mls_message_out, _welcome_option, _group_info) = self
+        let (mls_message_out, _welcome_option, group_info) = self
             .mls_group
             .remove_members(&self.provider, &self.signer, &leaf_indices)
             .map_err(|e| MlsError::Crypto(format!("Failed to remove members: {}", e)))?;
@@ -724,6 +847,16 @@ impl<E: Environment> MlsGroup<E> {
         self.pending_commit = Some(PendingCommit { target_epoch, sent_at: now });
 
         let mut actions = Vec::new();
+
+        let group_info_bytes = group_info.tls_serialize_detached().map_err(|e| {
+            MlsError::Serialization(format!("Failed to serialize GroupInfo: {}", e))
+        })?;
+
+        actions.push(MlsAction::PublishGroupInfo {
+            room_id: self.room_id,
+            epoch: target_epoch,
+            group_info_bytes,
+        });
 
         let commit_payload = mls_message_out
             .tls_serialize_detached()
@@ -853,9 +986,10 @@ mod tests {
         assert_eq!(group.epoch(), 0);
         assert!(!group.has_pending_commit());
 
-        // Should have logged group creation
-        assert_eq!(actions.len(), 1);
-        assert!(matches!(actions[0], MlsAction::Log { .. }));
+        // Should have published GroupInfo and logged group creation
+        assert_eq!(actions.len(), 2);
+        assert!(matches!(actions[0], MlsAction::PublishGroupInfo { .. }));
+        assert!(matches!(actions[1], MlsAction::Log { .. }));
     }
 
     #[test]
@@ -1133,5 +1267,61 @@ mod tests {
             !has_remove,
             "leave_group should not produce RemoveGroup - that happens when commit is processed"
         );
+    }
+
+    /// Test external commit join flow.
+    ///
+    /// Verifies that a client can join a group via external commit using
+    /// exported GroupInfo, without requiring a Welcome message.
+    #[test]
+    fn join_from_external_creates_commit() {
+        let env = TestEnv;
+        let room_id = 0x1234_5678_9abc_def0_1234_5678_9abc_def0;
+
+        // Alice creates the group
+        let alice_id = 42u64;
+        let (alice_group, _) =
+            MlsGroup::new(env.clone(), room_id, alice_id).expect("alice create group");
+
+        // Export GroupInfo for external joiners
+        let group_info_bytes = alice_group.export_group_info().expect("export group info");
+
+        // Bob joins via external commit
+        let bob_id = 100u64;
+        let (bob_group, actions) =
+            MlsGroup::join_from_external(env, room_id, bob_id, &group_info_bytes)
+                .expect("bob join via external commit");
+
+        // Bob should have created a group at the same epoch (external commit advances
+        // epoch)
+        assert_eq!(bob_group.room_id(), room_id);
+        assert_eq!(bob_group.member_id(), bob_id);
+
+        // Should have SendCommit action with ExternalCommit opcode
+        let has_commit = actions.iter().any(|a| match a {
+            MlsAction::SendCommit(frame) => {
+                frame.header.opcode_enum() == Some(Opcode::ExternalCommit)
+            },
+            _ => false,
+        });
+        assert!(
+            has_commit,
+            "join_from_external should produce SendCommit with ExternalCommit opcode"
+        );
+    }
+
+    /// Test that external commit fails with invalid GroupInfo.
+    #[test]
+    fn join_from_external_rejects_invalid_group_info() {
+        let env = TestEnv;
+        let room_id = 0x1234_5678_9abc_def0_1234_5678_9abc_def0;
+
+        // Try to join with garbage GroupInfo
+        let bob_id = 100u64;
+        let invalid_group_info = vec![0x01, 0x02, 0x03, 0x04];
+
+        let result = MlsGroup::join_from_external(env, room_id, bob_id, &invalid_group_info);
+
+        assert!(result.is_err(), "should reject invalid GroupInfo");
     }
 }
