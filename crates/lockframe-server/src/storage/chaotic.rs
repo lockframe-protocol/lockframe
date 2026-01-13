@@ -165,6 +165,27 @@ impl<S: Storage> Storage for ChaoticStorage<S> {
         }
         self.inner.load_mls_state(room_id)
     }
+
+    fn store_group_info(
+        &self,
+        room_id: u128,
+        epoch: u64,
+        group_info: &[u8],
+    ) -> Result<(), StorageError> {
+        self.increment_operation_count();
+        if self.should_fail() {
+            return Err(StorageError::Io("chaotic failure injection".to_string()));
+        }
+        self.inner.store_group_info(room_id, epoch, group_info)
+    }
+
+    fn load_group_info(&self, room_id: u128) -> Result<Option<(u64, Vec<u8>)>, StorageError> {
+        self.increment_operation_count();
+        if self.should_fail() {
+            return Err(StorageError::Io("chaotic failure injection".to_string()));
+        }
+        self.inner.load_group_info(room_id)
+    }
 }
 
 #[cfg(test)]

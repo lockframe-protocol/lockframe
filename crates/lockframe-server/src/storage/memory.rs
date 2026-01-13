@@ -26,6 +26,10 @@ struct MemoryStorageInner {
 
     /// MLS group state per room
     mls_states: HashMap<u128, MlsGroupState>,
+
+    /// GroupInfo for external joiners, maps room_id -> (epoch,
+    /// group_info_bytes)
+    group_infos: HashMap<u128, (u64, Vec<u8>)>,
 }
 
 impl MemoryStorage {
@@ -35,6 +39,7 @@ impl MemoryStorage {
             inner: Arc::new(Mutex::new(MemoryStorageInner {
                 frames: HashMap::new(),
                 mls_states: HashMap::new(),
+                group_infos: HashMap::new(),
             })),
         }
     }
@@ -169,6 +174,33 @@ impl Storage for MemoryStorage {
         let inner = self.inner.lock().expect("MemoryStorage mutex poisoned");
 
         Ok(inner.mls_states.get(&room_id).cloned())
+    }
+
+    /// # Panics
+    ///
+    /// Panics if the internal mutex is poisoned. This is acceptable for test
+    /// code.
+    fn store_group_info(
+        &self,
+        room_id: u128,
+        epoch: u64,
+        group_info: &[u8],
+    ) -> Result<(), StorageError> {
+        let mut inner = self.inner.lock().expect("MemoryStorage mutex poisoned");
+
+        inner.group_infos.insert(room_id, (epoch, group_info.to_vec()));
+
+        Ok(())
+    }
+
+    /// # Panics
+    ///
+    /// Panics if the internal mutex is poisoned. This is acceptable for test
+    /// code.
+    fn load_group_info(&self, room_id: u128) -> Result<Option<(u64, Vec<u8>)>, StorageError> {
+        let inner = self.inner.lock().expect("MemoryStorage mutex poisoned");
+
+        Ok(inner.group_infos.get(&room_id).cloned())
     }
 }
 

@@ -283,6 +283,18 @@ where
                 actions.extend(fetch_actions);
             },
 
+            Some(Opcode::GroupInfo) => {
+                conn.update_activity(now);
+                let store_actions = self.handle_group_info_publish(session_id, &frame);
+                actions.extend(store_actions);
+            },
+
+            Some(Opcode::GroupInfoRequest) => {
+                conn.update_activity(now);
+                let fetch_actions = self.handle_group_info_request(session_id, &frame);
+                actions.extend(fetch_actions);
+            },
+
             Some(Opcode::Welcome) => {
                 let room_id = frame.header.room_id();
                 let recipient_id = frame.header.recipient_id();
@@ -654,6 +666,179 @@ where
                     }],
                 }
             },
+        }
+    }
+
+    /// Handle GroupInfo publication (store GroupInfo for external joiners).
+    fn handle_group_info_publish(&mut self, session_id: u64, frame: &Frame) -> Vec<ServerAction> {
+        let now = self.env.now();
+
+        let payload = match Payload::from_frame(frame.clone()) {
+            Ok(Payload::GroupInfo(info)) => info,
+            Ok(_) => {
+                return vec![ServerAction::Log {
+                    level: LogLevel::Warn,
+                    message: format!(
+                        "unexpected payload type in GroupInfo frame from session {}",
+                        session_id
+                    ),
+                    timestamp: now,
+                }];
+            },
+            Err(e) => {
+                return vec![ServerAction::Log {
+                    level: LogLevel::Warn,
+                    message: format!(
+                        "failed to decode GroupInfo from session {}: {}",
+                        session_id, e
+                    ),
+                    timestamp: now,
+                }];
+            },
+        };
+
+        if let Err(e) =
+            self.storage.store_group_info(payload.room_id, payload.epoch, &payload.group_info_bytes)
+        {
+            return vec![ServerAction::Log {
+                level: LogLevel::Error,
+                message: format!(
+                    "failed to store GroupInfo for room {:032x}: {}",
+                    payload.room_id, e
+                ),
+                timestamp: now,
+            }];
+        }
+
+        vec![ServerAction::Log {
+            level: LogLevel::Debug,
+            message: format!(
+                "stored GroupInfo for room {:032x} at epoch {}",
+                payload.room_id, payload.epoch
+            ),
+            timestamp: now,
+        }]
+    }
+
+    /// Handle GroupInfo request (fetch GroupInfo for external joiners).
+    fn handle_group_info_request(&mut self, session_id: u64, frame: &Frame) -> Vec<ServerAction> {
+        use lockframe_proto::payloads::mls::GroupInfoPayload;
+
+        let now = self.env.now();
+
+        let request = match Payload::from_frame(frame.clone()) {
+            Ok(Payload::GroupInfoRequest(req)) => req,
+            Ok(_) => {
+                let error = Payload::Error(ErrorPayload::invalid_payload(
+                    "Expected GroupInfoRequest payload",
+                ));
+                return match error.into_frame(FrameHeader::new(Opcode::Error)) {
+                    Ok(frame) => {
+                        vec![ServerAction::SendToSession { session_id, frame }, ServerAction::Log {
+                            level: LogLevel::Warn,
+                            message: format!(
+                                "unexpected payload type in GroupInfoRequest frame from session {}",
+                                session_id
+                            ),
+                            timestamp: now,
+                        }]
+                    },
+                    Err(e) => vec![ServerAction::Log {
+                        level: LogLevel::Error,
+                        message: format!(
+                            "failed to encode error response for GroupInfoRequest: {}",
+                            e
+                        ),
+                        timestamp: now,
+                    }],
+                };
+            },
+            Err(e) => {
+                let error = Payload::Error(ErrorPayload::invalid_payload(&format!(
+                    "Failed to decode GroupInfoRequest: {}",
+                    e
+                )));
+                return match error.into_frame(FrameHeader::new(Opcode::Error)) {
+                    Ok(frame) => {
+                        vec![ServerAction::SendToSession { session_id, frame }, ServerAction::Log {
+                            level: LogLevel::Warn,
+                            message: format!(
+                                "failed to decode GroupInfoRequest from session {}: {}",
+                                session_id, e
+                            ),
+                            timestamp: now,
+                        }]
+                    },
+                    Err(e) => vec![ServerAction::Log {
+                        level: LogLevel::Error,
+                        message: format!(
+                            "failed to encode error response for GroupInfoRequest: {}",
+                            e
+                        ),
+                        timestamp: now,
+                    }],
+                };
+            },
+        };
+
+        match self.storage.load_group_info(request.room_id) {
+            Ok(Some((epoch, group_info_bytes))) => {
+                let response = Payload::GroupInfo(GroupInfoPayload {
+                    room_id: request.room_id,
+                    epoch,
+                    group_info_bytes,
+                });
+
+                match response.into_frame(FrameHeader::new(Opcode::GroupInfo)) {
+                    Ok(response_frame) => vec![
+                        ServerAction::SendToSession { session_id, frame: response_frame },
+                        ServerAction::Log {
+                            level: LogLevel::Debug,
+                            message: format!(
+                                "GroupInfo fetched for room {:032x} at epoch {}",
+                                request.room_id, epoch
+                            ),
+                            timestamp: now,
+                        },
+                    ],
+                    Err(e) => vec![ServerAction::Log {
+                        level: LogLevel::Error,
+                        message: format!("failed to encode GroupInfo response: {}", e),
+                        timestamp: now,
+                    }],
+                }
+            },
+            Ok(None) => {
+                let error = Payload::Error(ErrorPayload::room_not_found(request.room_id));
+                match error.into_frame(FrameHeader::new(Opcode::Error)) {
+                    Ok(frame) => {
+                        vec![ServerAction::SendToSession { session_id, frame }, ServerAction::Log {
+                            level: LogLevel::Debug,
+                            message: format!(
+                                "no GroupInfo found for room {:032x} (requested by session {})",
+                                request.room_id, session_id
+                            ),
+                            timestamp: now,
+                        }]
+                    },
+                    Err(e) => vec![ServerAction::Log {
+                        level: LogLevel::Error,
+                        message: format!(
+                            "failed to encode error response for GroupInfoRequest: {}",
+                            e
+                        ),
+                        timestamp: now,
+                    }],
+                }
+            },
+            Err(e) => vec![ServerAction::Log {
+                level: LogLevel::Error,
+                message: format!(
+                    "failed to load GroupInfo for room {:032x}: {}",
+                    request.room_id, e
+                ),
+                timestamp: now,
+            }],
         }
     }
 
