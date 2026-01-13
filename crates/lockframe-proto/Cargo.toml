@@ -50,6 +50,8 @@ bitflags = { version = "2.6", features = ["serde"] }
 thiserror = "2.0"
 zerocopy = { version = "0.8", features = ["derive"] }
 bytes = "1.9"
+insta = "1.46.0"
+hex = "0.4.3"
 
 [dev-dependencies]
 proptest = "1.5"

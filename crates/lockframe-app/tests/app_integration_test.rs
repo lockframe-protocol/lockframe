@@ -531,7 +531,7 @@ fn external_commit_broadcast_back_to_joiner() {
     let ext_commit = frames_by_opcode(&bob_commit_frames, Opcode::ExternalCommit);
     assert_eq!(ext_commit.len(), 1, "Bob should send ExternalCommit");
 
-    // CRITICAL: Server broadcasts ExternalCommit to BOTH Alice AND Bob
+    // Server broadcasts ExternalCommit to BOTH Alice AND Bob
     // This is what happens in real TUI - Bob receives their own commit back
     receive_frame(&mut alice_app, &mut alice_bridge, ext_commit[0].clone());
     receive_frame(&mut bob_app, &mut bob_bridge, ext_commit[0].clone()); // Bob gets it back!
@@ -707,6 +707,93 @@ fn third_client_external_join_messaging() {
             .iter()
             .any(|m| m.content == b"Thanks Alice!" && m.sender_id == charlie_id),
         "Bob should have Charlie's message"
+    );
+}
+
+/// Test that joining a room automatically sends a SyncRequest for historical
+/// messages.
+#[test]
+fn sync_request_sent_on_join() {
+    let env = SimEnv::with_seed(42);
+
+    // Alice creates room
+    let alice_id = 1;
+    let mut alice_app = connected_app(alice_id);
+    let mut alice_bridge: Bridge<SimEnv> = Bridge::new(env.clone(), alice_id);
+
+    let alice_frames = inject_command(&mut alice_app, &mut alice_bridge, "/create 100");
+    let group_info = extract_group_info(&frames_by_opcode(&alice_frames, Opcode::GroupInfo)[0])
+        .expect("Extract GroupInfo");
+
+    // Bob joins
+    let bob_id = 2;
+    let mut bob_app = connected_app(bob_id);
+    let mut bob_bridge: Bridge<SimEnv> = Bridge::new(env.clone(), bob_id);
+
+    inject_command(&mut bob_app, &mut bob_bridge, "/join 100");
+    let gi_frame = Payload::GroupInfo(group_info)
+        .into_frame(FrameHeader::new(Opcode::GroupInfo))
+        .expect("frame");
+
+    receive_frame(&mut bob_app, &mut bob_bridge, gi_frame);
+    let bob_frames = bob_bridge.take_outgoing();
+
+    // Bob should send ExternalCommit AND SyncRequest
+    let ext_commits = frames_by_opcode(&bob_frames, Opcode::ExternalCommit);
+    let sync_requests = frames_by_opcode(&bob_frames, Opcode::SyncRequest);
+
+    assert_eq!(ext_commits.len(), 1, "Bob should send ExternalCommit");
+    assert_eq!(sync_requests.len(), 1, "Bob should send SyncRequest for historical messages");
+
+    // Verify the SyncRequest is for room 100
+    assert_eq!(sync_requests[0].header.room_id(), 100, "SyncRequest should be for room 100");
+}
+
+/// Test that messages sent AFTER a client joins (same epoch) are properly
+/// received. This is the normal case - messages at the current epoch should
+/// work.
+#[test]
+fn same_epoch_messages_work() {
+    let env = SimEnv::with_seed(42);
+
+    // Alice creates room
+    let alice_id = 1;
+    let mut alice_app = connected_app(alice_id);
+    let mut alice_bridge: Bridge<SimEnv> = Bridge::new(env.clone(), alice_id);
+
+    let alice_frames = inject_command(&mut alice_app, &mut alice_bridge, "/create 100");
+    let group_info = extract_group_info(&frames_by_opcode(&alice_frames, Opcode::GroupInfo)[0])
+        .expect("Extract GroupInfo");
+
+    // Bob joins
+    let bob_id = 2;
+    let mut bob_app = connected_app(bob_id);
+    let mut bob_bridge: Bridge<SimEnv> = Bridge::new(env.clone(), bob_id);
+
+    inject_command(&mut bob_app, &mut bob_bridge, "/join 100");
+    let gi_frame = Payload::GroupInfo(group_info)
+        .into_frame(FrameHeader::new(Opcode::GroupInfo))
+        .expect("frame");
+    receive_frame(&mut bob_app, &mut bob_bridge, gi_frame);
+    let bob_commit_frames = bob_bridge.take_outgoing();
+    let ext_commit = frames_by_opcode(&bob_commit_frames, Opcode::ExternalCommit);
+
+    // Broadcast commit to both
+    receive_frame(&mut alice_app, &mut alice_bridge, ext_commit[0].clone());
+    receive_frame(&mut bob_app, &mut bob_bridge, ext_commit[0].clone());
+
+    // Alice sends message at current epoch (epoch 1)
+    let alice_msg = inject_command(&mut alice_app, &mut alice_bridge, "Hello at epoch 1");
+    let alice_msgs = frames_by_opcode(&alice_msg, Opcode::AppMessage);
+
+    // Bob receives message
+    receive_frame(&mut bob_app, &mut bob_bridge, alice_msgs[0].clone());
+
+    // Oracle: Bob should have Alice's message
+    let bob_room = bob_app.rooms().get(&100).expect("Bob room");
+    assert!(
+        bob_room.messages.iter().any(|m| m.content == b"Hello at epoch 1"),
+        "Bob should receive messages from current epoch"
     );
 }
 

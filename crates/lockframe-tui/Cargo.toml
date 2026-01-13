@@ -28,14 +28,10 @@ futures = "0.3"
 # CLI arguments
 clap = { version = "4", features = ["derive"] }
 
-# Randomness
-rand = "0.9"
-
 # Error handling
 thiserror = "2.0"
 
 # Logging
-tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [dev-dependencies]

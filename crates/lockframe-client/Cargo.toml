@@ -37,5 +37,10 @@ proptest = "1.5"
 lockframe-server = { path = "../lockframe-server" }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
 
+# Simulation harness for deterministic tests
+lockframe-harness = { path = "../lockframe-harness" }
+turmoil = "0.7"
+rand = "0.8"
+
 [lints]
 workspace = true

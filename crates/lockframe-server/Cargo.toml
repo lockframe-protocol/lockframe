@@ -57,5 +57,10 @@ rand_chacha = "0.3"
 # Cryptographic signatures for testing
 ed25519-dalek = { version = "2.1", features = ["serde"] }
 
+# Simulation harness for deterministic tests
+lockframe-harness = { path = "../lockframe-harness" }
+lockframe-client = { path = "../lockframe-client" }
+turmoil = "0.7"
+
 [lints]
 workspace = true

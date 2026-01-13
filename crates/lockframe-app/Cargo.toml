@@ -12,8 +12,8 @@ workspace = true
 lockframe-client = { path = "../lockframe-client" }
 lockframe-core = { path = "../lockframe-core" }
 lockframe-proto = { path = "../lockframe-proto" }
-tokio = { version = "1", features = ["sync"] }
 tracing = "0.1"
 
 [dev-dependencies]
+lockframe-harness = { path = "../lockframe-harness" }
 proptest = "1"
