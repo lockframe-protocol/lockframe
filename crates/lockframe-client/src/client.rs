@@ -272,7 +272,7 @@ impl<E: Environment> Client<E> {
                 message: format!("Server error: room_id={:x}", room_id),
             }]),
             Opcode::AppMessage => self.handle_app_message(room_id, frame),
-            Opcode::Commit => self.handle_commit(room_id, frame),
+            Opcode::Commit | Opcode::ExternalCommit => self.handle_commit(room_id, frame),
             Opcode::Welcome => self.handle_welcome(room_id, frame),
             Opcode::SyncResponse => self.handle_sync_response(room_id, frame),
             Opcode::KeyPackageFetch => self.handle_key_package_fetch_response(frame),
@@ -381,6 +381,15 @@ impl<E: Environment> Client<E> {
                     .merge_pending_commit()
                     .map_err(|e| ClientError::Mls { reason: e.to_string() })?;
                 Vec::new()
+            } else if is_own_commit && !room.mls_group.has_mls_pending_commit() {
+                // The MLS group is already at the committed epoch, so we should
+                // skip processing entirely to avoid reinitializing sender keys.
+                return Ok(vec![ClientAction::Log {
+                    message: format!(
+                        "Ignoring own external commit for room {:032x} (already applied)",
+                        room_id
+                    ),
+                }]);
             } else {
                 // Process the Commit even if we don't have a pending commit.
                 // This handles the race condition where we receive our own Commit back

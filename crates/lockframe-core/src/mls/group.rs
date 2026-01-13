@@ -744,16 +744,21 @@ impl<E: Environment> MlsGroup<E> {
         let mut commit_header = FrameHeader::new(Opcode::ExternalCommit);
         commit_header.set_room_id(room_id);
         commit_header.set_sender_id(member_id);
+
         let commit_frame = Frame::new(commit_header, commit_payload);
-
         let group = Self { room_id, member_id, mls_group, signer, provider, pending_commit: None };
+        let group_info_bytes = group.export_group_info()?;
 
-        let actions = vec![MlsAction::SendCommit(commit_frame), MlsAction::Log {
-            message: format!(
-                "Created external commit to join room {} at epoch {} (member_id={})",
-                room_id, epoch, member_id
-            ),
-        }];
+        let actions = vec![
+            MlsAction::SendCommit(commit_frame),
+            MlsAction::PublishGroupInfo { room_id, epoch, group_info_bytes },
+            MlsAction::Log {
+                message: format!(
+                    "Created external commit to join room {} at epoch {} (member_id={})",
+                    room_id, epoch, member_id
+                ),
+            },
+        ];
 
         Ok((group, actions))
     }

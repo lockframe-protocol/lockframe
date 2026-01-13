@@ -345,10 +345,24 @@ where
                 conn.update_activity(now);
                 let room_id = frame.header.room_id();
 
-                // Auto-create room on first Commit (epoch 0)
-                if opcode == Some(Opcode::Commit) && !self.room_manager.has_room(room_id) {
+                let is_commit =
+                    opcode == Some(Opcode::Commit) || opcode == Some(Opcode::ExternalCommit);
+                if is_commit && !self.room_manager.has_room(room_id) {
+                    // GroupInfo publish should create the room, but this is a fallback
                     let create_actions = self.create_room(room_id, session_id)?;
                     actions.extend(create_actions);
+                }
+
+                if opcode == Some(Opcode::ExternalCommit) {
+                    self.registry.subscribe(session_id, room_id);
+                    actions.push(ServerAction::Log {
+                        level: LogLevel::Debug,
+                        message: format!(
+                            "session {} subscribed to room {:032x} via ExternalCommit",
+                            session_id, room_id
+                        ),
+                        timestamp: now,
+                    });
                 }
 
                 let room_actions =
@@ -670,8 +684,13 @@ where
     }
 
     /// Handle GroupInfo publication (store GroupInfo for external joiners).
+    ///
+    /// When a client publishes GroupInfo at epoch 0, this indicates room
+    /// creation. The server creates the room in RoomManager and subscribes
+    /// the creator.
     fn handle_group_info_publish(&mut self, session_id: u64, frame: &Frame) -> Vec<ServerAction> {
         let now = self.env.now();
+        let mut actions = Vec::new();
 
         let payload = match Payload::from_frame(frame.clone()) {
             Ok(Payload::GroupInfo(info)) => info,
@@ -710,14 +729,16 @@ where
             }];
         }
 
-        vec![ServerAction::Log {
+        actions.push(ServerAction::Log {
             level: LogLevel::Debug,
             message: format!(
                 "stored GroupInfo for room {:032x} at epoch {}",
                 payload.room_id, payload.epoch
             ),
             timestamp: now,
-        }]
+        });
+
+        actions
     }
 
     /// Handle GroupInfo request (fetch GroupInfo for external joiners).
