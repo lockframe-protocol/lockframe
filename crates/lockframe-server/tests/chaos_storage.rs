@@ -6,6 +6,7 @@
 //! - Reads after successful writes are consistent
 //! - MLS state storage is consistent
 //! - Pagination boundaries are correct
+//! - Atomic write semantics (no corruption or partial frames)
 
 use bytes::Bytes;
 use lockframe_core::mls::MlsGroupState;
@@ -13,7 +14,7 @@ use lockframe_proto::{Frame, FrameHeader, Opcode};
 use lockframe_server::storage::{ChaoticStorage, MemoryStorage, Storage, StorageError};
 use proptest::prelude::*;
 
-/// Create a test frame with specific parameters
+/// Helper to create a test frame
 fn create_test_frame(room_id: u128, log_index: u64, payload: Vec<u8>) -> Frame {
     let mut header = FrameHeader::new(Opcode::AppMessage);
     header.set_room_id(room_id);
@@ -30,15 +31,10 @@ fn verify_frame_sequence(storage: &impl Storage, room_id: u128) -> Result<(), St
         let frames = storage.load_frames(room_id, 0, (latest + 1) as usize)?;
 
         for (expected_idx, frame) in frames.iter().enumerate() {
-            assert_eq!(
-                frame.header.log_index(),
-                expected_idx as u64,
-                "Frame index mismatch at position {}",
-                expected_idx
-            );
+            assert_eq!(frame.header.log_index(), expected_idx as u64,);
         }
 
-        assert_eq!(frames.len() as u64, latest + 1, "Frame count must match latest_index + 1");
+        assert_eq!(frames.len() as u64, latest + 1);
     }
 
     Ok(())
@@ -55,17 +51,14 @@ fn prop_storage_chaos_atomic_writes() {
         let storage = ChaoticStorage::with_seed(MemoryStorage::new(), failure_rate, seed);
 
         let mut successful_writes = 0u64;
-
-        // Attempt to write frames sequentially
         for i in 0..frame_count {
             let frame = create_test_frame(room_id, i as u64, vec![i as u8]);
 
             match storage.store_frame(room_id, i as u64, &frame) {
                 Ok(()) => successful_writes += 1,
                 Err(StorageError::Io(_)) => {
-                    // Chaotic failure - expected
-                    // Once a write fails, all subsequent writes should fail
-                    // (because log_index doesn't match)
+                    // Failure is expected: Once a write fails, all subsequent
+                    // writes should fail because log_index doesn't match.
                     break;
                 }
                 Err(e) => {
@@ -83,11 +76,7 @@ fn prop_storage_chaos_atomic_writes() {
                 .latest_log_index(room_id)
                 .expect("latest_log_index failed");
 
-            prop_assert_eq!(
-                latest,
-                Some(successful_writes - 1),
-                "Latest index must equal number of successful writes - 1"
-            );
+            prop_assert_eq!(latest, Some(successful_writes - 1));
         }
     });
 }
@@ -102,7 +91,6 @@ fn prop_storage_chaos_read_consistency() {
     )| {
         let storage = ChaoticStorage::with_seed(MemoryStorage::new(), failure_rate, seed);
 
-        // Write frames (some may fail)
         let mut expected_frames = Vec::new();
         for i in 0..write_count {
             let frame = create_test_frame(room_id, i as u64, vec![i as u8; 16]);
@@ -127,29 +115,12 @@ fn prop_storage_chaos_read_consistency() {
             .load_frames(room_id, 0, expected_frames.len())
             .expect("load_frames failed");
 
-        prop_assert_eq!(
-            read1.len(),
-            expected_frames.len(),
-            "Read count must match write count"
-        );
+        prop_assert_eq!(read1.len(), expected_frames.len());
+        prop_assert_eq!(read1.len(), read2.len());
 
-        prop_assert_eq!(read1.len(), read2.len(), "Reads must be consistent");
-
-        // Verify content matches
-        for (i, (expected, actual)) in expected_frames.iter().zip(read1.iter()).enumerate() {
-            prop_assert_eq!(
-                expected.header.log_index(),
-                actual.header.log_index(),
-                "Frame {} log_index mismatch",
-                i
-            );
-
-            prop_assert_eq!(
-                expected.payload.len(),
-                actual.payload.len(),
-                "Frame {} payload size mismatch",
-                i
-            );
+        for (expected, actual) in expected_frames.iter().zip(read1.iter()) {
+            prop_assert_eq!(expected.header.log_index(), actual.header.log_index());
+            prop_assert_eq!(expected.payload.len(), actual.payload.len());
         }
     });
 }
@@ -162,10 +133,9 @@ fn prop_storage_chaos_pagination() {
         total_frames in 20usize..100,
         page_size in 5usize..20,
     )| {
-        // Use 0% failure rate to get all frames written
-        let storage = ChaoticStorage::with_seed(MemoryStorage::new(), 0.0, seed);
+        let failure_rate = 0.0; // all frames should be written
+        let storage = ChaoticStorage::with_seed(MemoryStorage::new(), failure_rate, seed);
 
-        // Write all frames successfully
         for i in 0..total_frames {
             let frame = create_test_frame(room_id, i as u64, vec![i as u8]);
             storage.store_frame(room_id, i as u64, &frame)
@@ -193,20 +163,10 @@ fn prop_storage_chaos_pagination() {
             }
         }
 
-        prop_assert_eq!(
-            all_frames.len(),
-            total_frames,
-            "Pagination must retrieve all frames"
-        );
+        prop_assert_eq!(all_frames.len(), total_frames);
 
-        // Verify sequential indices
         for (expected_idx, frame) in all_frames.iter().enumerate() {
-            prop_assert_eq!(
-                frame.header.log_index(),
-                expected_idx as u64,
-                "Pagination broke sequence at index {}",
-                expected_idx
-            );
+            prop_assert_eq!(frame.header.log_index(), expected_idx as u64);
         }
     });
 }
@@ -221,18 +181,18 @@ fn prop_storage_chaos_mls_state_consistency() {
         member_count in 1usize..10,
     )| {
         let storage = ChaoticStorage::with_seed(MemoryStorage::new(), failure_rate, seed);
-
-        // Create MLS state
         let members: Vec<u64> = (0..member_count).map(|i| i as u64).collect();
+        let tree_hash = [42u8; 32];
+        let openmls_state = vec![0xde, 0xad];
+
         let state = MlsGroupState::new(
             room_id,
             epoch,
-            [42u8; 32], // tree_hash
+            tree_hash,
             members.clone(),
-            vec![0xde, 0xad], // openmls_state
+            openmls_state
         );
 
-        // Attempt to store
         let store_result = storage.store_mls_state(room_id, &state);
 
         if store_result.is_ok() {
@@ -242,20 +202,11 @@ fn prop_storage_chaos_mls_state_consistency() {
                 .expect("load_mls_state failed")
                 .expect("state must exist after successful store");
 
-            prop_assert_eq!(loaded.epoch, state.epoch, "Epoch mismatch");
-            prop_assert_eq!(
-                loaded.member_count(),
-                state.member_count(),
-                "Member count mismatch"
-            );
+            prop_assert_eq!(loaded.epoch, state.epoch);
+            prop_assert_eq!(loaded.member_count(), state.member_count());
 
-            // Verify all members present
             for member_id in members {
-                prop_assert!(
-                    loaded.is_member(member_id),
-                    "Member {} missing after load",
-                    member_id
-                );
+                prop_assert!(loaded.is_member(member_id));
             }
         }
     });
@@ -268,8 +219,8 @@ fn prop_storage_chaos_mls_state_overwrite() {
         room_id in any::<u128>(),
         epochs in prop::collection::vec(0u64..1000, 2..10),
     )| {
-        // Use 0% failure rate for this test
-        let storage = ChaoticStorage::with_seed(MemoryStorage::new(), 0.0, seed);
+        let failure_rate = 0.0; // all frames should be written
+        let storage = ChaoticStorage::with_seed(MemoryStorage::new(), failure_rate, seed);
 
         let mut last_state = None;
 
@@ -297,12 +248,8 @@ fn prop_storage_chaos_mls_state_overwrite() {
 
         let expected = last_state.unwrap();
 
-        prop_assert_eq!(loaded.epoch, expected.epoch, "Epoch mismatch");
-        prop_assert_eq!(
-            loaded.member_count(),
-            expected.member_count(),
-            "Member count mismatch"
-        );
+        prop_assert_eq!(loaded.epoch, expected.epoch);
+        prop_assert_eq!(loaded.member_count(), expected.member_count());
     });
 }
 
@@ -314,30 +261,24 @@ fn prop_storage_conflict_detection() {
         initial_frames in 1usize..10,
         gap_size in 1u64..10,
     )| {
-        // Use 0% failure rate - testing conflict detection, not chaos
-        let storage = ChaoticStorage::with_seed(MemoryStorage::new(), 0.0, seed);
+        let failure_rate = 0.0; // all frames should be written
+        let storage = ChaoticStorage::with_seed(MemoryStorage::new(), failure_rate, seed);
 
-        // Write initial frames sequentially
         for i in 0..initial_frames {
             let frame = create_test_frame(room_id, i as u64, vec![i as u8]);
             storage.store_frame(room_id, i as u64, &frame)
                 .expect("sequential write should succeed");
         }
 
-        // Attempt to write with a gap
-        let gap_index = initial_frames as u64 + gap_size;
+        let gap_index = initial_frames as u64 + gap_size; // add gap
         let frame = create_test_frame(room_id, gap_index, vec![0xff]);
         let result = storage.store_frame(room_id, gap_index, &frame);
 
         // ORACLE: Gap must produce Conflict error
         match result {
             Err(StorageError::Conflict { expected, got }) => {
-                prop_assert_eq!(
-                    expected,
-                    initial_frames as u64,
-                    "Expected index should be next sequential"
-                );
-                prop_assert_eq!(got, gap_index, "Got index should be the gap index");
+                prop_assert_eq!(expected, initial_frames as u64);
+                prop_assert_eq!(got, gap_index);
             }
             Ok(()) => {
                 panic!("Gap write should have failed with Conflict error");
@@ -355,11 +296,7 @@ fn prop_storage_conflict_detection() {
             .latest_log_index(room_id)
             .expect("latest_log_index failed");
 
-        prop_assert_eq!(
-            latest,
-            Some(initial_frames as u64 - 1),
-            "Latest index should be unchanged after failed write"
-        );
+        prop_assert_eq!(latest, Some(initial_frames as u64 - 1));
     });
 }
 
@@ -373,7 +310,6 @@ fn prop_storage_chaos_concurrent_rooms() {
     )| {
         let storage = ChaoticStorage::with_seed(MemoryStorage::new(), failure_rate, seed);
 
-        // Write frames to multiple rooms
         let mut room_write_counts = vec![0u64; room_count];
 
         for room_idx in 0..room_count {
@@ -403,13 +339,77 @@ fn prop_storage_chaos_concurrent_rooms() {
                     .latest_log_index(room_id)
                     .expect("latest_log_index failed");
 
-                prop_assert_eq!(
-                    latest,
-                    Some(expected_count - 1),
-                    "Room {} latest index mismatch",
-                    room_idx
-                );
+                prop_assert_eq!(latest, Some(expected_count - 1));
             }
+        }
+    });
+}
+
+#[test]
+fn prop_storage_atomic_writes_no_corruption() {
+    proptest!(|(
+        write_count in 1usize..50,
+        room_id in any::<u128>(),
+    )| {
+        let storage = MemoryStorage::new();
+        let payload_size = 16;
+
+        // Write frames sequentially
+        for i in 0..write_count {
+            let frame = create_test_frame(room_id, i as u64, vec![i as u8; payload_size]);
+            storage.store_frame(room_id, i as u64, &frame)
+                .expect("store should succeed");
+        }
+
+        // ORACLE: All written frames are readable and valid
+        let loaded = storage.load_frames(room_id, 0, write_count + 10)
+            .expect("load_frames should succeed");
+        prop_assert_eq!(loaded.len(), write_count);
+
+        // ORACLE: No partial or corrupt frames
+        for (i, frame) in loaded.iter().enumerate() {
+            prop_assert_eq!(frame.header.log_index(), i as u64);
+            prop_assert_eq!(frame.payload.len(), payload_size);
+
+            let expected_payload = vec![i as u8; payload_size];
+            prop_assert_eq!(frame.payload.as_ref(), expected_payload.as_slice());
+        }
+
+        // ORACLE: latest_log_index is consistent
+        let latest = storage.latest_log_index(room_id)
+            .expect("latest_log_index should succeed");
+        prop_assert_eq!(latest, Some(write_count as u64 - 1));
+    });
+}
+
+#[test]
+fn prop_storage_sequential_batch_writes() {
+    proptest!(|(
+        batch_sizes in prop::collection::vec(1usize..20, 2..5),
+        room_id in any::<u128>(),
+    )| {
+        let storage = MemoryStorage::new();
+        let mut total_written = 0usize;
+
+        // Write multiple batches sequentially
+        for batch_size in batch_sizes {
+            for i in 0..batch_size {
+                let idx = total_written + i;
+                let frame = create_test_frame(room_id, idx as u64, vec![idx as u8]);
+                storage.store_frame(room_id, idx as u64, &frame)
+                    .expect("store should succeed");
+            }
+            total_written += batch_size;
+        }
+
+        // ORACLE: All frames from all batches are present
+        let loaded = storage.load_frames(room_id, 0, total_written + 10)
+            .expect("load_frames should succeed");
+        prop_assert_eq!(loaded.len(), total_written);
+
+        // ORACLE: Sequential indices across all batches
+        for (i, frame) in loaded.iter().enumerate() {
+            prop_assert_eq!(frame.header.log_index(), i as u64);
         }
     });
 }
