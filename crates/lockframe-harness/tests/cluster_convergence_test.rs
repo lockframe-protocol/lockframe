@@ -6,9 +6,11 @@
 //! GroupInfo management that this test harness doesn't fully simulate. Those
 //! flows are tested in the actual server integration tests.
 
+use std::collections::HashSet;
+
 use lockframe_client::{Client, ClientAction, ClientEvent, ClientIdentity};
 use lockframe_core::mls::RoomId;
-use lockframe_harness::SimEnv;
+use lockframe_harness::{ClientSnapshot, InvariantRegistry, RoomSnapshot, SimEnv, SystemSnapshot};
 use lockframe_proto::{FrameHeader, Opcode, Payload, payloads::mls::GroupInfoPayload};
 use proptest::prelude::*;
 
@@ -205,9 +207,40 @@ impl TestCluster {
             .filter_map(|(i, c)| c.epoch(ROOM_ID).map(|e| (i, e)))
             .collect()
     }
+
+    /// Create a SystemSnapshot for invariant checking.
+    ///
+    /// Extracts observable state from all clients for invariant verification.
+    fn to_snapshot(&self) -> SystemSnapshot {
+        let mut clients = Vec::new();
+
+        for client in &self.clients {
+            let client_id = client.sender_id();
+
+            if !client.is_member(ROOM_ID) {
+                continue;
+            }
+
+            let epoch = client.epoch(ROOM_ID).unwrap_or(0);
+            let tree_hash = client.tree_hash(ROOM_ID).unwrap_or([0u8; 32]);
+            let members: HashSet<u64> =
+                client.member_ids(ROOM_ID).unwrap_or_default().into_iter().collect();
+
+            let room_snapshot =
+                RoomSnapshot::with_epoch(epoch).with_tree_hash(tree_hash).with_members(members);
+
+            let mut client_snapshot = ClientSnapshot::new(client_id);
+            client_snapshot.rooms.insert(ROOM_ID, room_snapshot);
+            client_snapshot.record_epoch(ROOM_ID, epoch);
+
+            clients.push(client_snapshot);
+        }
+
+        SystemSnapshot::from_clients(clients)
+    }
 }
 
-/// Verify all clients have converged to the same epoch.
+/// Verify all clients have converged to the same epoch and pass invariants.
 fn verify_convergence(cluster: &TestCluster) -> Result<(), String> {
     let epochs = cluster.epochs();
     if epochs.is_empty() {
@@ -223,6 +256,15 @@ fn verify_convergence(cluster: &TestCluster) -> Result<(), String> {
             ));
         }
     }
+
+    let snapshot = cluster.to_snapshot();
+    let invariants = InvariantRegistry::standard();
+
+    invariants.check_all(&snapshot).map_err(|violations| {
+        let messages: Vec<_> = violations.iter().map(|v| v.to_string()).collect();
+        format!("Invariant violations:\n  {}", messages.join("\n  "))
+    })?;
+
     Ok(())
 }
 

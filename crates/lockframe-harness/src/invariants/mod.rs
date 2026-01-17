@@ -87,11 +87,13 @@ impl InvariantRegistry {
     /// - [`ActiveRoomInRooms`]: active_room is in rooms map
     /// - [`EpochMonotonicity`]: epochs never decrease
     /// - [`MembershipConsistency`]: members agree on membership
+    /// - [`TreeHashConvergence`]: tree hashes match at same epoch
     pub fn standard() -> Self {
         let mut registry = Self::new();
         registry.add(ActiveRoomInRooms);
         registry.add(EpochMonotonicity);
         registry.add(MembershipConsistency);
+        registry.add(TreeHashConvergence);
         registry
     }
 
@@ -139,7 +141,7 @@ mod tests {
     fn standard_registry_has_invariants() {
         let registry = InvariantRegistry::standard();
         assert!(!registry.is_empty());
-        assert_eq!(registry.len(), 3);
+        assert_eq!(registry.len(), 4);
     }
 
     #[test]

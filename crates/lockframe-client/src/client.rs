@@ -133,6 +133,27 @@ impl<E: Environment> Client<E> {
         self.rooms.get(&room_id).map(|r| r.mls_group.epoch())
     }
 
+    /// MLS tree hash for a room. `None` if not a member or export fails.
+    ///
+    /// Tree hash is a cryptographic commitment to the group's ratchet tree.
+    /// All members at the same epoch must have identical tree hashes.
+    pub fn tree_hash(&self, room_id: RoomId) -> Option<[u8; 32]> {
+        self.rooms
+            .get(&room_id)
+            .and_then(|r| r.mls_group.export_group_state().ok())
+            .map(|state| state.tree_hash)
+    }
+
+    /// Member IDs in a room. `None` if not a member or export fails.
+    ///
+    /// Returns all member IDs (sender_ids) currently in the MLS group.
+    pub fn member_ids(&self, room_id: RoomId) -> Option<Vec<u64>> {
+        self.rooms
+            .get(&room_id)
+            .and_then(|r| r.mls_group.export_group_state().ok())
+            .map(|state| state.members.clone())
+    }
+
     /// Generate a KeyPackage for this client to join a room.
     ///
     /// The returned KeyPackage should be sent to the room creator who will
