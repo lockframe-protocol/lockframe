@@ -1,0 +1,74 @@
+---
+source: crates/lockframe-harness/tests/cluster_convergence_test.rs
+expression: snapshot
+---
+{
+  "clients": [
+    {
+      "id": 1,
+      "active_room": null,
+      "rooms": {
+        "5192376087906286159508272029171713": {
+          "epoch": 2,
+          "tree_hash": "[tree_hash]",
+          "members": [
+            1,
+            2,
+            3
+          ],
+          "message_count": 0,
+          "log_indices": []
+        }
+      },
+      "epoch_history": {
+        "5192376087906286159508272029171713": [
+          2
+        ]
+      }
+    },
+    {
+      "id": 2,
+      "active_room": null,
+      "rooms": {
+        "5192376087906286159508272029171713": {
+          "epoch": 2,
+          "tree_hash": "[tree_hash]",
+          "members": [
+            1,
+            2,
+            3
+          ],
+          "message_count": 0,
+          "log_indices": []
+        }
+      },
+      "epoch_history": {
+        "5192376087906286159508272029171713": [
+          2
+        ]
+      }
+    },
+    {
+      "id": 3,
+      "active_room": null,
+      "rooms": {
+        "5192376087906286159508272029171713": {
+          "epoch": 2,
+          "tree_hash": "[tree_hash]",
+          "members": [
+            1,
+            2,
+            3
+          ],
+          "message_count": 0,
+          "log_indices": []
+        }
+      },
+      "epoch_history": {
+        "5192376087906286159508272029171713": [
+          2
+        ]
+      }
+    }
+  ]
+}

@@ -6,8 +6,9 @@
 //! GroupInfo management that this test harness doesn't fully simulate. Those
 //! flows are tested in the actual server integration tests.
 
-use std::collections::HashSet;
+use std::collections::BTreeSet;
 
+use insta::assert_json_snapshot;
 use lockframe_client::{Client, ClientAction, ClientEvent, ClientIdentity};
 use lockframe_core::mls::RoomId;
 use lockframe_harness::{ClientSnapshot, InvariantRegistry, RoomSnapshot, SimEnv, SystemSnapshot};
@@ -18,6 +19,7 @@ const ROOM_ID: RoomId = 0x0001_0001_0001_0001_0001_0001_0001_0001;
 
 /// Simulated cluster of clients for testing convergence.
 struct TestCluster {
+    /// List of simulated clients.
     clients: Vec<Client<SimEnv>>,
     /// Current GroupInfo bytes for external joiners
     group_info: Option<Vec<u8>>,
@@ -223,7 +225,7 @@ impl TestCluster {
 
             let epoch = client.epoch(ROOM_ID).unwrap_or(0);
             let tree_hash = client.tree_hash(ROOM_ID).unwrap_or([0u8; 32]);
-            let members: HashSet<u64> =
+            let members: BTreeSet<u64> =
                 client.member_ids(ROOM_ID).unwrap_or_default().into_iter().collect();
 
             let room_snapshot =
@@ -319,4 +321,68 @@ proptest! {
             cluster.send_and_verify(sender, msg.as_bytes()).expect("messaging");
         }
     }
+}
+
+/// Snapshot of converged state after Welcome-based joins.
+///
+/// This test uses a fixed seed to ensure deterministic state, allowing us to
+/// detect unintended changes to epoch numbering, tree structure, or member IDs.
+/// Tree hashes are redacted as they depend on cryptographic state.
+#[test]
+fn snapshot_welcome_convergence() {
+    let mut cluster = TestCluster::new(42, 3);
+
+    cluster.create_room().expect("create");
+    cluster.join_via_welcome(1).expect("join 1");
+    cluster.join_via_welcome(2).expect("join 2");
+
+    verify_convergence(&cluster).expect("convergence");
+
+    let snapshot = cluster.to_snapshot();
+    assert_json_snapshot!("welcome_convergence_state", snapshot, {
+        ".clients[].rooms.*.tree_hash" => "[tree_hash]",
+    });
+}
+
+/// Snapshot of converged state after external joins.
+///
+/// Similar to Welcome snapshot but for external commit flow.
+/// Tree hashes are redacted as they depend on cryptographic state.
+#[test]
+fn snapshot_external_convergence() {
+    let mut cluster = TestCluster::new(42, 3);
+
+    cluster.create_room().expect("create");
+    cluster.join_via_external(1).expect("join 1");
+    cluster.join_via_external(2).expect("join 2");
+
+    verify_convergence(&cluster).expect("convergence");
+
+    let snapshot = cluster.to_snapshot();
+    assert_json_snapshot!("external_convergence_state", snapshot, {
+        ".clients[].rooms.*.tree_hash" => "[tree_hash]",
+    });
+}
+
+/// Test that state remains consistent when commits are delivered out of order.
+///
+/// This simulates network reordering where commits arrive in different order
+/// than they were sent.
+#[test]
+fn out_of_order_commit_handling() {
+    let mut cluster = TestCluster::new(42, 2);
+
+    cluster.create_room().expect("create");
+    cluster.join_via_welcome(1).expect("bob joins");
+
+    verify_convergence(&cluster).expect("convergence");
+
+    cluster.send_and_verify(0, b"msg1").expect("msg1");
+    cluster.send_and_verify(1, b"msg2").expect("msg2");
+    cluster.send_and_verify(0, b"msg3").expect("msg3");
+    verify_convergence(&cluster).expect("final convergence");
+
+    let snapshot = cluster.to_snapshot();
+    let invariants = InvariantRegistry::standard();
+    invariants.check_all(&snapshot).expect("invariants hold");
 }
