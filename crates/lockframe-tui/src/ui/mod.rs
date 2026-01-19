@@ -12,14 +12,20 @@ mod status;
 use lockframe_app::App;
 use ratatui::{
     Frame,
-    layout::{Constraint, Direction, Layout, Rect},
+    layout::{Constraint, Direction, Layout},
 };
 
+use crate::InputState;
+
 /// Render the entire UI.
-pub fn render(frame: &mut Frame, app: &App) {
+///
+/// Takes both App state (rooms, messages) and InputState (text buffer, cursor).
+pub fn render(frame: &mut Frame, app: &App, input_state: &InputState) {
     const MAIN_AREA_MIN_HEIGHT: u16 = 3;
     const INPUT_HEIGHT: u16 = 3;
     const STATUS_HEIGHT: u16 = 1;
+    const ROOM_SIDEBAR_WIDTH: u16 = 12;
+    const CHAT_AREA_MIN_WIDTH: u16 = 20;
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -34,20 +40,10 @@ pub fn render(frame: &mut Frame, app: &App) {
         return;
     };
 
-    render_main_area(frame, app, *main_area);
-    input::render(frame, app, *input_area);
-    status::render(frame, app, *status_area);
-}
-
-/// Render the main area (rooms sidebar + chat).
-fn render_main_area(frame: &mut Frame, app: &App, area: Rect) {
-    const ROOM_SIDEBAR_WIDTH: u16 = 12;
-    const CHAT_AREA_MIN_WIDTH: u16 = 20;
-
     let chunks = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Length(ROOM_SIDEBAR_WIDTH), Constraint::Min(CHAT_AREA_MIN_WIDTH)])
-        .split(area);
+        .split(*main_area);
 
     let [rooms_area, chat_area] = chunks.as_ref() else {
         return;
@@ -55,4 +51,6 @@ fn render_main_area(frame: &mut Frame, app: &App, area: Rect) {
 
     rooms::render(frame, app, *rooms_area);
     chat::render(frame, app, *chat_area);
+    input::render(frame, input_state, *input_area);
+    status::render(frame, app, *status_area);
 }

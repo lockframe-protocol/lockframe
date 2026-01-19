@@ -10,7 +10,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use lockframe_app::{App, AppEvent, Driver, KeyInput};
+use lockframe_app::{App, AppAction, AppEvent, Driver};
 use lockframe_proto::Frame;
 
 use crate::invariants::{ClientSnapshot, InvariantRegistry, RoomSnapshot, SystemSnapshot};
@@ -65,26 +65,10 @@ impl SimDriver {
         self
     }
 
-    /// Inject a single key event.
-    pub fn inject_key(&self, key: KeyInput) {
+    /// Inject an AppEvent for processing.
+    pub fn inject_event(&self, event: AppEvent) {
         let mut state = self.state.lock().unwrap();
-        state.pending_events.push_back(AppEvent::Key(key));
-    }
-
-    /// Inject a command string
-    pub fn inject_command(&self, cmd: &str) {
-        for c in cmd.chars() {
-            self.inject_key(KeyInput::Char(c));
-        }
-        self.inject_key(KeyInput::Enter);
-    }
-
-    /// Inject a message to send.
-    pub fn inject_message(&self, text: &str) {
-        for c in text.chars() {
-            self.inject_key(KeyInput::Char(c));
-        }
-        self.inject_key(KeyInput::Enter);
+        state.pending_events.push_back(event);
     }
 
     /// Inject a frame from the server.
@@ -146,14 +130,15 @@ impl Driver for SimDriver {
     type Error = SimDriverError;
     type Instant = std::time::Instant;
 
-    async fn poll_event(&mut self) -> Result<Option<AppEvent>, Self::Error> {
+    async fn poll_event(&mut self, app: &mut App) -> Result<Vec<AppAction>, Self::Error> {
         let mut state = self.state.lock().unwrap();
 
         if let Some(event) = state.pending_events.pop_front() {
-            return Ok(Some(event));
+            drop(state);
+            Ok(app.handle(event))
+        } else {
+            Ok(vec![])
         }
-
-        Ok(None)
     }
 
     async fn send_frame(&mut self, frame: Frame) -> Result<(), Self::Error> {
@@ -194,9 +179,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn inject_command_queues_events() {
+    fn inject_event_queues_event() {
         let driver = SimDriver::new();
-        driver.inject_command("/create 100");
+        driver.inject_event(AppEvent::RoomJoined { room_id: 100 });
 
         assert!(driver.has_pending());
     }
@@ -214,12 +199,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn poll_event_returns_injected() {
+    async fn poll_event_processes_event() {
         let mut driver = SimDriver::new();
-        driver.inject_key(KeyInput::Char('a'));
+        let mut app = App::new("localhost:4433".to_string());
+        driver.inject_event(AppEvent::RoomJoined { room_id: 100 });
 
-        let event = driver.poll_event().await.unwrap();
-        assert!(matches!(event, Some(AppEvent::Key(KeyInput::Char('a')))));
+        let actions = driver.poll_event(&mut app).await.unwrap();
+        assert!(actions.iter().any(|a| matches!(a, AppAction::Render)));
+        assert!(app.rooms().contains_key(&100));
     }
 
     #[tokio::test]

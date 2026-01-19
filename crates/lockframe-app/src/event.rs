@@ -4,19 +4,14 @@
 //! the [`crate::App`] state machine.
 //!
 //! Events originate from two distinct sources:
-//! - User interactions (Keyboard, Resize) and system ticks.
-//! - Protocol notifications translated from the underlying client.
+//! - System events (Resize, Tick)
+//! - Protocol notifications
 
 use lockframe_core::mls::RoomId;
-
-use crate::KeyInput;
 
 /// Events processed by the App state machine.
 #[derive(Debug, Clone)]
 pub enum AppEvent {
-    /// Keyboard input.
-    Key(KeyInput),
-
     /// Periodic tick.
     Tick,
 

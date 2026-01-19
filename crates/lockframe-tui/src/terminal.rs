@@ -14,13 +14,13 @@ use crossterm::{
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
 use futures::StreamExt;
-use lockframe_app::{App, AppEvent, Driver, KeyInput};
+use lockframe_app::{App, AppAction, AppEvent, Driver};
 use lockframe_client::transport::{self, ConnectedClient, TransportError};
 use lockframe_proto::Frame;
 use ratatui::{Terminal, backend::CrosstermBackend};
 use thiserror::Error;
 
-use crate::ui;
+use crate::{InputState, KeyInput, ui};
 
 /// Terminal driver errors.
 #[derive(Debug, Error)]
@@ -41,12 +41,13 @@ pub enum TerminalError {
 /// Terminal driver implementing the [`Driver`] trait.
 ///
 /// Handles terminal I/O (crossterm), rendering (ratatui), and network
-/// communication (quinn QUIC).
+/// communication (quinn QUIC). Owns the input state for text editing.
 pub struct TerminalDriver {
     terminal: Terminal<CrosstermBackend<Stdout>>,
     event_stream: EventStream,
     connection: Option<ConnectedClient>,
     server_addr: String,
+    input_state: InputState,
 }
 
 impl TerminalDriver {
@@ -59,7 +60,13 @@ impl TerminalDriver {
         let terminal = Terminal::new(backend)?;
         let event_stream = EventStream::new();
 
-        Ok(Self { terminal, event_stream, connection: None, server_addr })
+        Ok(Self {
+            terminal,
+            event_stream,
+            connection: None,
+            server_addr,
+            input_state: InputState::new(),
+        })
     }
 
     /// Convert crossterm KeyCode to KeyInput.
@@ -86,7 +93,7 @@ impl Driver for TerminalDriver {
     type Error = TerminalError;
     type Instant = Instant;
 
-    async fn poll_event(&mut self) -> Result<Option<AppEvent>, Self::Error> {
+    async fn poll_event(&mut self, app: &mut App) -> Result<Vec<AppAction>, Self::Error> {
         let timeout = tokio::time::Duration::from_millis(100);
 
         tokio::select! {
@@ -97,21 +104,21 @@ impl Driver for TerminalDriver {
                 match maybe_event {
                     Some(Ok(Event::Key(key_event))) if key_event.kind == KeyEventKind::Press => {
                         match Self::convert_key(key_event.code) {
-                            Some(key_input) => Ok(Some(AppEvent::Key(key_input))),
-                            None => Ok(None),
+                            Some(key_input) => Ok(self.input_state.handle_key(key_input, app)),
+                            None => Ok(vec![]),
                         }
                     },
                     Some(Ok(Event::Resize(cols, rows))) => {
-                        Ok(Some(AppEvent::Resize(cols, rows)))
+                        Ok(app.handle(AppEvent::Resize(cols, rows)))
                     },
                     Some(Err(e)) => Err(TerminalError::Io(e)),
-                    _ => Ok(None),
+                    _ => Ok(vec![]),
                 }
             }
 
             // Tick timeout
             _ = tokio::time::sleep(timeout) => {
-                Ok(Some(AppEvent::Tick))
+                Ok(app.handle(AppEvent::Tick))
             }
         }
     }
@@ -143,7 +150,7 @@ impl Driver for TerminalDriver {
 
     fn render(&mut self, app: &App) -> Result<(), Self::Error> {
         self.terminal.draw(|frame| {
-            ui::render(frame, app);
+            ui::render(frame, app, &self.input_state);
         })?;
         Ok(())
     }

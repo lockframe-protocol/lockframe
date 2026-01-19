@@ -1,4 +1,4 @@
-//! Application state machine and UI logic.
+//! Application state machine.
 //!
 //! This module defines the [`App`] state machine, which manages the interactive
 //! state of the application completely decoupled from I/O and protocol
@@ -9,10 +9,6 @@
 //!
 //! # Responsibilities
 //!
-//! Unlike the protocol client (which handles encryption and sequencing), this
-//! module manages transient interaction state:
-//!
-//! - Manage the text buffer, cursor position, and command parsing.
 //! - Tracks the list of rooms, unread badges, and the currently active room.
 //! - Stores terminal dimensions to handle resize events.
 //! - Tracks high-level connection state for UI feedback.
@@ -21,7 +17,7 @@ use std::collections::HashMap;
 
 use lockframe_core::mls::RoomId;
 
-use crate::{AppAction, AppEvent, ConnectionState, KeyInput, RoomState};
+use crate::{AppAction, AppEvent, ConnectionState, RoomState};
 
 /// Application state machine.
 ///
@@ -37,10 +33,6 @@ pub struct App {
     rooms: HashMap<RoomId, RoomState>,
     /// Currently active room. `None` if no room is selected.
     active_room: Option<RoomId>,
-    /// Input line buffer.
-    input_buffer: String,
-    /// Cursor position in input buffer.
-    input_cursor: usize,
     /// Terminal dimensions (columns, rows).
     terminal_size: (u16, u16),
     /// Transient status message. `None` if no message.
@@ -55,8 +47,6 @@ impl App {
             server_addr,
             rooms: HashMap::new(),
             active_room: None,
-            input_buffer: String::new(),
-            input_cursor: 0,
             terminal_size: (80, 24),
             status_message: None,
         }
@@ -65,7 +55,6 @@ impl App {
     /// Process an event and return actions.
     pub fn handle(&mut self, event: AppEvent) -> Vec<AppAction> {
         match event {
-            AppEvent::Key(key) => self.handle_key(key),
             AppEvent::Tick => vec![],
             AppEvent::Resize(cols, rows) => {
                 self.terminal_size = (cols, rows);
@@ -126,169 +115,62 @@ impl App {
         }
     }
 
-    fn handle_key(&mut self, key: KeyInput) -> Vec<AppAction> {
-        match key {
-            KeyInput::Char(c) => {
-                self.input_buffer.insert(self.input_cursor, c);
-                self.input_cursor = self.input_cursor.saturating_add(1);
-                vec![AppAction::Render]
-            },
-            KeyInput::Backspace => {
-                if self.input_cursor > 0 {
-                    self.input_cursor = self.input_cursor.saturating_sub(1);
-                    self.input_buffer.remove(self.input_cursor);
-                }
-                vec![AppAction::Render]
-            },
-            KeyInput::Delete => {
-                if self.input_cursor < self.input_buffer.len() {
-                    self.input_buffer.remove(self.input_cursor);
-                }
-                vec![AppAction::Render]
-            },
-            KeyInput::Left => {
-                self.input_cursor = self.input_cursor.saturating_sub(1);
-                vec![AppAction::Render]
-            },
-            KeyInput::Right => {
-                if self.input_cursor < self.input_buffer.len() {
-                    self.input_cursor = self.input_cursor.saturating_add(1);
-                }
-                vec![AppAction::Render]
-            },
-            KeyInput::Home => {
-                self.input_cursor = 0;
-                vec![AppAction::Render]
-            },
-            KeyInput::End => {
-                self.input_cursor = self.input_buffer.len();
-                vec![AppAction::Render]
-            },
-            KeyInput::Enter => self.handle_enter(),
-            KeyInput::Tab => self.cycle_room(),
-            KeyInput::Esc => vec![AppAction::Quit],
-            KeyInput::Up | KeyInput::Down => vec![],
-        }
+    /// Set a status message to display to the user.
+    pub fn set_status(&mut self, message: impl Into<String>) {
+        self.status_message = Some(message.into());
     }
 
-    fn handle_enter(&mut self) -> Vec<AppAction> {
-        if self.input_buffer.is_empty() {
-            return vec![];
-        }
-
-        let input = std::mem::take(&mut self.input_buffer);
-        self.input_cursor = 0;
-
-        if let Some(cmd) = input.strip_prefix('/') {
-            return self.handle_command(cmd);
-        }
-
-        self.active_room.map_or_else(
-            || vec![AppAction::Render],
-            |room_id| {
-                vec![
-                    AppAction::SendMessage { room_id, content: input.into_bytes() },
-                    AppAction::Render,
-                ]
-            },
-        )
+    /// Initiate connection to the server.
+    pub fn connect(&mut self) -> Vec<AppAction> {
+        self.state = ConnectionState::Connecting;
+        vec![AppAction::Connect { server_addr: self.server_addr.clone() }, AppAction::Render]
     }
 
-    fn handle_command(&mut self, cmd: &str) -> Vec<AppAction> {
-        let parts: Vec<&str> = cmd.split_whitespace().collect();
-        let command = parts.first().copied().unwrap_or("");
-
-        match command {
-            "connect" => {
-                self.state = ConnectionState::Connecting;
-                vec![
-                    AppAction::Connect { server_addr: self.server_addr.clone() },
-                    AppAction::Render,
-                ]
-            },
-            "create" => {
-                let Some(room_id_str) = parts.get(1) else {
-                    self.status_message = Some("Usage: /create <room_id>".into());
-                    return vec![AppAction::Render];
-                };
-                match room_id_str.parse::<u128>() {
-                    Ok(room_id) => {
-                        self.status_message = Some(format!("Creating room {room_id}..."));
-                        vec![AppAction::CreateRoom { room_id }, AppAction::Render]
-                    },
-                    Err(_) => {
-                        self.status_message = Some("Error: Invalid room ID".into());
-                        vec![AppAction::Render]
-                    },
-                }
-            },
-            "join" => {
-                let Some(room_id_str) = parts.get(1) else {
-                    self.status_message = Some("Usage: /join <room_id>".into());
-                    return vec![AppAction::Render];
-                };
-                match room_id_str.parse::<u128>() {
-                    Ok(room_id) => vec![AppAction::JoinRoom { room_id }, AppAction::Render],
-                    Err(_) => {
-                        self.status_message = Some("Error: Invalid room ID".into());
-                        vec![AppAction::Render]
-                    },
-                }
-            },
-            "leave" => self.active_room.map_or_else(
-                || vec![AppAction::Render],
-                |room_id| vec![AppAction::LeaveRoom { room_id }, AppAction::Render],
-            ),
-            "publish" => vec![AppAction::PublishKeyPackage, AppAction::Render],
-            "add" => {
-                if self.active_room.is_none() {
-                    self.status_message = Some("Error: No active room".into());
-                    return vec![AppAction::Render];
-                }
-                let Some(user_id_str) = parts.get(1) else {
-                    self.status_message = Some("Usage: /add <user_id>".into());
-                    return vec![AppAction::Render];
-                };
-                match (self.active_room, user_id_str.parse::<u64>()) {
-                    (Some(room_id), Ok(user_id)) => {
-                        self.status_message = Some(format!("Adding user {user_id}..."));
-                        vec![AppAction::AddMember { room_id, user_id }, AppAction::Render]
-                    },
-                    _ => {
-                        self.status_message = Some("Error: Invalid user ID".into());
-                        vec![AppAction::Render]
-                    },
-                }
-            },
-            "quit" | "q" => vec![AppAction::Quit],
-            _ => vec![AppAction::Render],
-        }
+    /// Create a new room with the given ID.
+    pub fn create_room(&mut self, room_id: RoomId) -> Vec<AppAction> {
+        self.status_message = Some(format!("Creating room {room_id}..."));
+        vec![AppAction::CreateRoom { room_id }, AppAction::Render]
     }
 
-    fn cycle_room(&mut self) -> Vec<AppAction> {
-        if self.rooms.is_empty() {
-            return vec![];
+    /// Join an existing room via external commit.
+    pub fn join_room(&mut self, room_id: RoomId) -> Vec<AppAction> {
+        vec![AppAction::JoinRoom { room_id }, AppAction::Render]
+    }
+
+    /// Leave the specified room.
+    pub fn leave_room(&mut self, room_id: RoomId) -> Vec<AppAction> {
+        vec![AppAction::LeaveRoom { room_id }, AppAction::Render]
+    }
+
+    /// Publish a key package so others can add us to rooms.
+    pub fn publish_key_package(&mut self) -> Vec<AppAction> {
+        vec![AppAction::PublishKeyPackage, AppAction::Render]
+    }
+
+    /// Add a member to the specified room by fetching their key package.
+    pub fn add_member(&mut self, room_id: RoomId, user_id: u64) -> Vec<AppAction> {
+        self.status_message = Some(format!("Adding user {user_id}..."));
+        vec![AppAction::AddMember { room_id, user_id }, AppAction::Render]
+    }
+
+    /// Send a message to the specified room.
+    pub fn send_message(&mut self, room_id: RoomId, content: Vec<u8>) -> Vec<AppAction> {
+        vec![AppAction::SendMessage { room_id, content }, AppAction::Render]
+    }
+
+    /// Quit the application.
+    pub fn quit(&self) -> Vec<AppAction> {
+        vec![AppAction::Quit]
+    }
+
+    /// Set the active room.
+    pub fn set_active_room(&mut self, room_id: RoomId) {
+        if self.rooms.contains_key(&room_id) {
+            self.active_room = Some(room_id);
+            if let Some(room) = self.rooms.get_mut(&room_id) {
+                room.unread = false;
+            }
         }
-
-        let mut room_ids: Vec<_> = self.rooms.keys().copied().collect();
-        room_ids.sort_unstable();
-
-        let current_idx = self.active_room.and_then(|id| room_ids.iter().position(|&r| r == id));
-        let len = room_ids.len();
-        let next_idx = current_idx.map_or(0, |idx| {
-            let next = idx.saturating_add(1);
-            if next >= len { 0 } else { next }
-        });
-
-        if let Some(&next_room) = room_ids.get(next_idx) {
-            self.active_room = Some(next_room);
-        }
-
-        if let Some(room) = self.active_room.and_then(|id| self.rooms.get_mut(&id)) {
-            room.unread = false;
-        }
-
-        vec![AppAction::Render]
     }
 
     /// Current connection state.
@@ -316,16 +198,6 @@ impl App {
         self.active_room.and_then(|id| self.rooms.get(&id))
     }
 
-    /// Current text input buffer.
-    pub fn input_buffer(&self) -> &str {
-        &self.input_buffer
-    }
-
-    /// Cursor position within input buffer.
-    pub fn input_cursor(&self) -> usize {
-        self.input_cursor
-    }
-
     /// Terminal dimensions (columns, rows).
     pub fn terminal_size(&self) -> (u16, u16) {
         self.terminal_size
@@ -348,43 +220,6 @@ mod tests {
     }
 
     #[test]
-    fn enter_sends_message() {
-        let mut app = connected_app();
-        let _ = app.handle(AppEvent::RoomJoined { room_id: 1 });
-        app.input_buffer = "hello".into();
-        app.input_cursor = 5;
-
-        let actions = app.handle(AppEvent::Key(KeyInput::Enter));
-
-        assert!(matches!(actions.as_slice(), [
-            AppAction::SendMessage { room_id: 1, .. },
-            AppAction::Render
-        ]));
-        assert!(app.input_buffer.is_empty());
-    }
-
-    #[test]
-    fn tab_cycles_rooms() {
-        let mut app = connected_app();
-        let _ = app.handle(AppEvent::RoomJoined { room_id: 1 });
-        let _ = app.handle(AppEvent::RoomJoined { room_id: 2 });
-        app.active_room = Some(1);
-
-        let _ = app.handle(AppEvent::Key(KeyInput::Tab));
-        assert_eq!(app.active_room, Some(2));
-
-        let _ = app.handle(AppEvent::Key(KeyInput::Tab));
-        assert_eq!(app.active_room, Some(1));
-    }
-
-    #[test]
-    fn esc_quits() {
-        let mut app = connected_app();
-        let actions = app.handle(AppEvent::Key(KeyInput::Esc));
-        assert!(matches!(actions.as_slice(), [AppAction::Quit]));
-    }
-
-    #[test]
     fn room_joined_preserves_messages() {
         let mut app = connected_app();
         let _ = app.handle(AppEvent::RoomJoined { room_id: 1 });
@@ -399,5 +234,83 @@ mod tests {
         // Second RoomJoined should not clear messages
         let _ = app.handle(AppEvent::RoomJoined { room_id: 1 });
         assert_eq!(app.rooms.get(&1).map(|r| r.messages.len()), Some(1));
+    }
+
+    #[test]
+    fn api_create_room() {
+        let mut app = connected_app();
+        let actions = app.create_room(100);
+
+        assert!(matches!(actions.as_slice(), [
+            AppAction::CreateRoom { room_id: 100 },
+            AppAction::Render
+        ]));
+    }
+
+    #[test]
+    fn api_join_room() {
+        let mut app = connected_app();
+        let actions = app.join_room(200);
+
+        assert!(matches!(actions.as_slice(), [
+            AppAction::JoinRoom { room_id: 200 },
+            AppAction::Render
+        ]));
+    }
+
+    #[test]
+    fn api_leave_room() {
+        let mut app = connected_app();
+        let actions = app.leave_room(100);
+
+        assert!(matches!(actions.as_slice(), [
+            AppAction::LeaveRoom { room_id: 100 },
+            AppAction::Render
+        ]));
+    }
+
+    #[test]
+    fn api_add_member() {
+        let mut app = connected_app();
+        let actions = app.add_member(100, 42);
+
+        assert!(matches!(actions.as_slice(), [
+            AppAction::AddMember { room_id: 100, user_id: 42 },
+            AppAction::Render
+        ]));
+    }
+
+    #[test]
+    fn api_send_message() {
+        let mut app = connected_app();
+        let actions = app.send_message(100, b"hello".to_vec());
+
+        assert!(matches!(actions.as_slice(), [
+            AppAction::SendMessage { room_id: 100, .. },
+            AppAction::Render
+        ]));
+    }
+
+    #[test]
+    fn api_connect() {
+        let mut app = App::new("localhost:8080".into());
+        let actions = app.connect();
+
+        assert!(matches!(actions.as_slice(), [AppAction::Connect { .. }, AppAction::Render]));
+        assert!(matches!(app.state, ConnectionState::Connecting));
+    }
+
+    #[test]
+    fn api_set_active_room() {
+        let mut app = connected_app();
+        let _ = app.handle(AppEvent::RoomJoined { room_id: 1 });
+        let _ = app.handle(AppEvent::RoomJoined { room_id: 2 });
+
+        app.set_active_room(2);
+        assert_eq!(app.active_room, Some(2));
+
+        // Setting non-existent room should be ignored
+        app.set_active_room(999);
+        assert_eq!(app.active_room, Some(2));
     }
 }

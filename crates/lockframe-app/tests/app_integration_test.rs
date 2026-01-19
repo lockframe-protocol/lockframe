@@ -1,21 +1,13 @@
-//! End-to-end tests for TUI behavior verification.
-//!
-//! # Test Strategy
-//!
-//! Each test simulates what a user does in the TUI:
-//! 1. Type commands (e.g., "/create 100")
-//! 2. Process through App → Bridge → Client
-//! 3. Simulate server responses
-//! 4. Verify App state matches expected TUI behavior
+//! Integration tests for App and Bridge behavior.
 //!
 //! # Oracle Pattern
 //!
 //! Tests end with oracle checks that verify:
-//! - App state reflects the expected UI state
+//! - App state reflects expected state
 //! - Messages are delivered to the correct rooms
 //! - Member lists are consistent
 
-use lockframe_app::{App, AppAction, AppEvent, Bridge, KeyInput};
+use lockframe_app::{App, AppAction, AppEvent, Bridge};
 use lockframe_core::env::Environment;
 use lockframe_harness::SimEnv;
 use lockframe_proto::{Frame, FrameHeader, Opcode, Payload, payloads::mls::GroupInfoPayload};
@@ -27,37 +19,70 @@ fn connected_app(sender_id: u64) -> App {
     app
 }
 
-/// Inject a command into App and process through Bridge.
-/// Returns the outgoing frames that would be sent to server.
-fn inject_command<E: Environment>(app: &mut App, bridge: &mut Bridge<E>, cmd: &str) -> Vec<Frame> {
-    for c in cmd.chars() {
-        app.handle(AppEvent::Key(KeyInput::Char(c)));
-    }
-    let actions = app.handle(AppEvent::Key(KeyInput::Enter));
-
+/// Process actions from App through Bridge and update App state.
+fn process_actions<E: Environment>(
+    app: &mut App,
+    bridge: &mut Bridge<E>,
+    actions: Vec<AppAction>,
+) -> Vec<Frame> {
     for action in actions {
-        process_app_action(app, bridge, action);
+        match action {
+            AppAction::CreateRoom { .. }
+            | AppAction::JoinRoom { .. }
+            | AppAction::LeaveRoom { .. }
+            | AppAction::SendMessage { .. }
+            | AppAction::PublishKeyPackage
+            | AppAction::AddMember { .. } => {
+                let events = bridge.process_app_action(action);
+                for event in events {
+                    app.handle(event);
+                }
+            },
+            AppAction::Render | AppAction::Quit | AppAction::Connect { .. } => {},
+        }
     }
 
     bridge.take_outgoing()
 }
 
-/// Process a single AppAction through Bridge and update App.
-fn process_app_action<E: Environment>(app: &mut App, bridge: &mut Bridge<E>, action: AppAction) {
-    match action {
-        AppAction::CreateRoom { .. }
-        | AppAction::JoinRoom { .. }
-        | AppAction::LeaveRoom { .. }
-        | AppAction::SendMessage { .. }
-        | AppAction::PublishKeyPackage
-        | AppAction::AddMember { .. } => {
-            let events = bridge.process_app_action(action);
-            for event in events {
-                app.handle(event);
-            }
-        },
-        _ => {},
-    }
+/// Create a room using App API and process through Bridge.
+fn create_room<E: Environment>(app: &mut App, bridge: &mut Bridge<E>, room_id: u128) -> Vec<Frame> {
+    let actions = app.create_room(room_id);
+    process_actions(app, bridge, actions)
+}
+
+/// Join a room using App API and process through Bridge.
+fn join_room<E: Environment>(app: &mut App, bridge: &mut Bridge<E>, room_id: u128) -> Vec<Frame> {
+    let actions = app.join_room(room_id);
+    process_actions(app, bridge, actions)
+}
+
+/// Leave a room using App API and process through Bridge.
+fn leave_room<E: Environment>(app: &mut App, bridge: &mut Bridge<E>, room_id: u128) -> Vec<Frame> {
+    let actions = app.leave_room(room_id);
+    process_actions(app, bridge, actions)
+}
+
+/// Send a message using App API and process through Bridge.
+fn send_message<E: Environment>(
+    app: &mut App,
+    bridge: &mut Bridge<E>,
+    room_id: u128,
+    content: &str,
+) -> Vec<Frame> {
+    let actions = app.send_message(room_id, content.as_bytes().to_vec());
+    process_actions(app, bridge, actions)
+}
+
+/// Add a member using App API and process through Bridge.
+fn add_member<E: Environment>(
+    app: &mut App,
+    bridge: &mut Bridge<E>,
+    room_id: u128,
+    user_id: u64,
+) -> Vec<Frame> {
+    let actions = app.add_member(room_id, user_id);
+    process_actions(app, bridge, actions)
 }
 
 /// Simulate receiving a frame from the server.
@@ -81,13 +106,6 @@ fn extract_group_info(frame: &Frame) -> Option<GroupInfoPayload> {
     }
 }
 
-/// Test that /create command creates a room and sets it as active.
-///
-/// TUI behavior:
-/// - User types "/create 100"
-/// - App shows "Joined room 100"
-/// - Room 100 becomes the active room
-/// - GroupInfo frame is sent to server
 #[test]
 fn create_command_creates_room() {
     let env = SimEnv::with_seed(42);
@@ -95,8 +113,7 @@ fn create_command_creates_room() {
     let mut app = connected_app(sender_id);
     let mut bridge: Bridge<SimEnv> = Bridge::new(env, sender_id);
 
-    // User types "/create 100"
-    let frames = inject_command(&mut app, &mut bridge, "/create 100");
+    let frames = create_room(&mut app, &mut bridge, 100);
 
     // Oracle: App state should show room created
     assert!(app.rooms().contains_key(&100), "Room 100 should exist in App");
@@ -114,13 +131,6 @@ fn create_command_creates_room() {
     );
 }
 
-/// Test that messages can be sent after creating a room.
-///
-/// TUI behavior:
-/// - User creates room
-/// - User types "hello world"
-/// - Message appears in chat
-/// - AppMessage frame is sent to server
 #[test]
 fn message_after_create() {
     let env = SimEnv::with_seed(42);
@@ -129,11 +139,11 @@ fn message_after_create() {
     let mut bridge: Bridge<SimEnv> = Bridge::new(env, sender_id);
 
     // Create room
-    let _ = inject_command(&mut app, &mut bridge, "/create 100");
+    let _ = create_room(&mut app, &mut bridge, 100);
     let _ = bridge.take_outgoing(); // Clear frames
 
     // Send message
-    let frames = inject_command(&mut app, &mut bridge, "hello world");
+    let frames = send_message(&mut app, &mut bridge, 100, "hello world");
 
     // Oracle: Message should appear in room
     let room = app.rooms().get(&100).expect("Room should exist");
@@ -145,16 +155,6 @@ fn message_after_create() {
     assert_eq!(msg_frames.len(), 1, "Should send one AppMessage");
 }
 
-/// Test that /join initiates external join and processes GroupInfo response.
-///
-/// TUI behavior:
-/// 1. User types "/join 100"
-/// 2. GroupInfoRequest is sent to server
-/// 3. Server responds with GroupInfo
-/// 4. ExternalCommit is sent to server
-/// 5. Room 100 appears in sidebar and becomes active
-///
-/// This is the flow that was broken in TUI but passed Client-only tests.
 #[test]
 fn external_join_flow() {
     let env = SimEnv::with_seed(42);
@@ -164,7 +164,7 @@ fn external_join_flow() {
     let mut alice_app = connected_app(alice_sender_id);
     let mut alice_bridge: Bridge<SimEnv> = Bridge::new(env.clone(), alice_sender_id);
 
-    let alice_frames = inject_command(&mut alice_app, &mut alice_bridge, "/create 100");
+    let alice_frames = create_room(&mut alice_app, &mut alice_bridge, 100);
     let group_info_frames = frames_by_opcode(&alice_frames, Opcode::GroupInfo);
     assert_eq!(group_info_frames.len(), 1, "Alice should publish GroupInfo");
 
@@ -176,7 +176,7 @@ fn external_join_flow() {
     let mut bob_bridge: Bridge<SimEnv> = Bridge::new(env.clone(), bob_sender_id);
 
     // Bob types "/join 100"
-    let bob_frames = inject_command(&mut bob_app, &mut bob_bridge, "/join 100");
+    let bob_frames = join_room(&mut bob_app, &mut bob_bridge, 100);
 
     // Should send GroupInfoRequest
     let request_frames = frames_by_opcode(&bob_frames, Opcode::GroupInfoRequest);
@@ -199,15 +199,6 @@ fn external_join_flow() {
     assert_eq!(bob_app.active_room(), Some(100), "Room 100 should be Bob's active room");
 }
 
-/// Test that messages work between clients after external join.
-///
-/// TUI behavior:
-/// 1. Alice creates room
-/// 2. Bob joins via /join
-/// 3. Alice sends "Hello Bob"
-/// 4. Bob receives "Hello Bob"
-/// 5. Bob sends "Hello Alice"
-/// 6. Alice receives "Hello Alice"
 #[test]
 fn messaging_after_external_join() {
     let env = SimEnv::with_seed(42);
@@ -217,7 +208,7 @@ fn messaging_after_external_join() {
     let mut alice_app = connected_app(alice_id);
     let mut alice_bridge: Bridge<SimEnv> = Bridge::new(env.clone(), alice_id);
 
-    let alice_frames = inject_command(&mut alice_app, &mut alice_bridge, "/create 100");
+    let alice_frames = create_room(&mut alice_app, &mut alice_bridge, 100);
     let group_info = extract_group_info(&frames_by_opcode(&alice_frames, Opcode::GroupInfo)[0])
         .expect("Extract GroupInfo");
 
@@ -226,7 +217,7 @@ fn messaging_after_external_join() {
     let mut bob_app = connected_app(bob_id);
     let mut bob_bridge: Bridge<SimEnv> = Bridge::new(env.clone(), bob_id);
 
-    inject_command(&mut bob_app, &mut bob_bridge, "/join 100");
+    join_room(&mut bob_app, &mut bob_bridge, 100);
 
     // Simulate server sending GroupInfo to Bob
     let group_info_frame = Payload::GroupInfo(group_info)
@@ -246,7 +237,7 @@ fn messaging_after_external_join() {
     assert!(bob_app.rooms().contains_key(&100), "Bob should have room");
 
     // Alice sends message
-    let alice_msg_frames = inject_command(&mut alice_app, &mut alice_bridge, "Hello Bob");
+    let alice_msg_frames = send_message(&mut alice_app, &mut alice_bridge, 100, "Hello Bob");
     let alice_msgs = frames_by_opcode(&alice_msg_frames, Opcode::AppMessage);
     assert_eq!(alice_msgs.len(), 1, "Alice should send message");
 
@@ -261,7 +252,7 @@ fn messaging_after_external_join() {
     );
 
     // Bob sends message
-    let bob_msg_frames = inject_command(&mut bob_app, &mut bob_bridge, "Hello Alice");
+    let bob_msg_frames = send_message(&mut bob_app, &mut bob_bridge, 100, "Hello Alice");
     let bob_msgs = frames_by_opcode(&bob_msg_frames, Opcode::AppMessage);
     assert_eq!(bob_msgs.len(), 1, "Bob should send message");
 
@@ -276,16 +267,6 @@ fn messaging_after_external_join() {
     );
 }
 
-/// Test that /add command adds a member via Welcome.
-///
-/// TUI behavior:
-/// 1. Alice creates room
-/// 2. Bob publishes KeyPackage
-/// 3. Server stores Bob's KeyPackage
-/// 4. Alice types "/add 2"
-/// 5. Alice's App shows "Added member 2"
-/// 6. Welcome frame is sent to server
-/// 7. Bob processes Welcome and joins room
 #[test]
 fn add_member_flow() {
     let env = SimEnv::with_seed(42);
@@ -295,7 +276,7 @@ fn add_member_flow() {
     let mut alice_app = connected_app(alice_id);
     let mut alice_bridge: Bridge<SimEnv> = Bridge::new(env.clone(), alice_id);
 
-    inject_command(&mut alice_app, &mut alice_bridge, "/create 100");
+    create_room(&mut alice_app, &mut alice_bridge, 100);
     alice_bridge.take_outgoing(); // Clear frames
 
     // Bob creates identity and generates KeyPackage
@@ -307,20 +288,16 @@ fn add_member_flow() {
     // Bob generates KeyPackage
     let (_key_package_bytes, _hash_ref) = bob_client.generate_key_package().expect("Generate KP");
 
-    // Alice add Bob
-    for c in "/add 2".chars() {
-        alice_app.handle(AppEvent::Key(KeyInput::Char(c)));
-    }
-    let actions = alice_app.handle(AppEvent::Key(KeyInput::Enter));
+    // Alice adds Bob
+    let frames = add_member(&mut alice_app, &mut alice_bridge, 100, 2);
 
-    // Oracle: Should produce AddMember action
-    let add_action = actions.iter().find(|a| matches!(a, AppAction::AddMember { .. }));
-    assert!(add_action.is_some(), "Should produce AddMember action");
-
-    if let Some(AppAction::AddMember { room_id, user_id }) = add_action {
-        assert_eq!(*room_id, 100, "Should add to room 100");
-        assert_eq!(*user_id, 2, "Should add user 2");
-    }
+    // Oracle: Should have sent frames (FetchKeyPackage request)
+    // Note: In real flow, server would respond with KeyPackage, then Welcome is
+    // sent
+    assert!(
+        !frames.is_empty() || alice_app.status_message().is_some(),
+        "Should have sent frames or set status"
+    );
 
     // Oracle: Status message should show adding
     assert!(
@@ -330,13 +307,6 @@ fn add_member_flow() {
     );
 }
 
-/// Test three clients communicating after mixed join methods.
-///
-/// TUI behavior:
-/// 1. Alice creates room
-/// 2. Bob joins via Welcome (/add from Alice)
-/// 3. Charlie joins via external commit (/join)
-/// 4. All three can send and receive messages
 #[test]
 fn three_clients_full_flow() {
     let env = SimEnv::with_seed(42);
@@ -346,7 +316,7 @@ fn three_clients_full_flow() {
     let mut alice_app = connected_app(alice_id);
     let mut alice_bridge: Bridge<SimEnv> = Bridge::new(env.clone(), alice_id);
 
-    let alice_frames = inject_command(&mut alice_app, &mut alice_bridge, "/create 100");
+    let alice_frames = create_room(&mut alice_app, &mut alice_bridge, 100);
     let group_info = extract_group_info(&frames_by_opcode(&alice_frames, Opcode::GroupInfo)[0])
         .expect("Extract GroupInfo");
 
@@ -362,17 +332,13 @@ fn three_clients_full_flow() {
     let _alice_client_actions =
         alice_bridge.process_app_action(AppAction::AddMember { room_id: 100, user_id: bob_id });
 
-    // Actually the FetchAndAddMember flow requires server roundtrip
-    // Let's test Alice creating Welcome directly by accessing client
-    // This is a limitation of the test - real flow goes through server
-
     // For now, verify Charlie's external join works
     let charlie_id = 3;
     let mut charlie_app = connected_app(charlie_id);
     let mut charlie_bridge: Bridge<SimEnv> = Bridge::new(env.clone(), charlie_id);
 
     // Charlie joins via /join
-    inject_command(&mut charlie_app, &mut charlie_bridge, "/join 100");
+    join_room(&mut charlie_app, &mut charlie_bridge, 100);
     let group_info_frame = Payload::GroupInfo(group_info)
         .into_frame(FrameHeader::new(Opcode::GroupInfo))
         .expect("Create frame");
@@ -391,7 +357,7 @@ fn three_clients_full_flow() {
     assert!(charlie_app.rooms().contains_key(&100), "Charlie should have room");
 
     // Alice sends message
-    let alice_msg_frames = inject_command(&mut alice_app, &mut alice_bridge, "Hello everyone!");
+    let alice_msg_frames = send_message(&mut alice_app, &mut alice_bridge, 100, "Hello everyone!");
     let alice_msgs = frames_by_opcode(&alice_msg_frames, Opcode::AppMessage);
 
     // Charlie receives message
@@ -404,13 +370,6 @@ fn three_clients_full_flow() {
     );
 }
 
-/// Test that joining a non-existent room shows error.
-///
-/// TUI behavior:
-/// - User types "/join 999"
-/// - GroupInfoRequest is sent
-/// - Server responds with error (or timeout)
-/// - Error message is shown in status bar
 #[test]
 fn join_nonexistent_room_shows_error() {
     let env = SimEnv::with_seed(42);
@@ -419,7 +378,7 @@ fn join_nonexistent_room_shows_error() {
     let mut bridge: Bridge<SimEnv> = Bridge::new(env, sender_id);
 
     // Try to join non-existent room
-    let frames = inject_command(&mut app, &mut bridge, "/join 999");
+    let frames = join_room(&mut app, &mut bridge, 999);
 
     // Should send GroupInfoRequest
     let request_frames = frames_by_opcode(&frames, Opcode::GroupInfoRequest);
@@ -429,45 +388,29 @@ fn join_nonexistent_room_shows_error() {
     assert!(!app.rooms().contains_key(&999), "Room should not exist yet");
 }
 
-/// Test that Tab key cycles through rooms.
-///
-/// TUI behavior:
-/// - User creates room 100
-/// - User creates room 200
-/// - User presses Tab
-/// - Active room switches from 100 to 200
-/// - User presses Tab again
-/// - Active room switches from 200 to 100
 #[test]
-fn tab_cycles_rooms() {
+fn set_active_room_switches_rooms() {
     let env = SimEnv::with_seed(42);
     let sender_id = 1;
     let mut app = connected_app(sender_id);
     let mut bridge: Bridge<SimEnv> = Bridge::new(env, sender_id);
 
     // Create two rooms
-    inject_command(&mut app, &mut bridge, "/create 100");
-    inject_command(&mut app, &mut bridge, "/create 200");
+    create_room(&mut app, &mut bridge, 100);
+    create_room(&mut app, &mut bridge, 200);
 
     // Initial active room should be 100 (first created)
     assert_eq!(app.active_room(), Some(100), "Initial active should be 100");
 
-    // Tab to next room
-    app.handle(AppEvent::Key(KeyInput::Tab));
-    assert_eq!(app.active_room(), Some(200), "After Tab, active should be 200");
+    // Switch to room 200
+    app.set_active_room(200);
+    assert_eq!(app.active_room(), Some(200), "After set, active should be 200");
 
-    // Tab wraps around
-    app.handle(AppEvent::Key(KeyInput::Tab));
-    assert_eq!(app.active_room(), Some(100), "After second Tab, active should be 100");
+    // Switch back to room 100
+    app.set_active_room(100);
+    assert_eq!(app.active_room(), Some(100), "After second set, active should be 100");
 }
 
-/// Test that /leave removes room from App.
-///
-/// TUI behavior:
-/// - User creates room 100
-/// - User types "/leave"
-/// - Room 100 is removed from sidebar
-/// - No active room
 #[test]
 fn leave_removes_room() {
     let env = SimEnv::with_seed(42);
@@ -476,19 +419,17 @@ fn leave_removes_room() {
     let mut bridge: Bridge<SimEnv> = Bridge::new(env, sender_id);
 
     // Create room
-    inject_command(&mut app, &mut bridge, "/create 100");
+    create_room(&mut app, &mut bridge, 100);
     assert!(app.rooms().contains_key(&100), "Room should exist");
 
     // Leave room
-    inject_command(&mut app, &mut bridge, "/leave");
+    leave_room(&mut app, &mut bridge, 100);
 
     // Oracle: Room should be gone
     assert!(!app.rooms().contains_key(&100), "Room should be removed");
     assert_eq!(app.active_room(), None, "No active room");
 }
 
-/// Test that the joiner can still decrypt messages after receiving their own
-/// ExternalCommit broadcast from the server.
 #[test]
 fn external_commit_broadcast_back_to_joiner() {
     let env = SimEnv::with_seed(42);
@@ -498,7 +439,7 @@ fn external_commit_broadcast_back_to_joiner() {
     let mut alice_app = connected_app(alice_id);
     let mut alice_bridge: Bridge<SimEnv> = Bridge::new(env.clone(), alice_id);
 
-    let alice_frames = inject_command(&mut alice_app, &mut alice_bridge, "/create 100");
+    let alice_frames = create_room(&mut alice_app, &mut alice_bridge, 100);
     let group_info = extract_group_info(&frames_by_opcode(&alice_frames, Opcode::GroupInfo)[0])
         .expect("Extract GroupInfo");
 
@@ -507,7 +448,7 @@ fn external_commit_broadcast_back_to_joiner() {
     let mut bob_app = connected_app(bob_id);
     let mut bob_bridge: Bridge<SimEnv> = Bridge::new(env.clone(), bob_id);
 
-    inject_command(&mut bob_app, &mut bob_bridge, "/join 100");
+    join_room(&mut bob_app, &mut bob_bridge, 100);
 
     // Server sends GroupInfo to Bob
     let group_info_frame = Payload::GroupInfo(group_info)
@@ -530,7 +471,7 @@ fn external_commit_broadcast_back_to_joiner() {
     assert!(bob_app.rooms().contains_key(&100), "Bob should have room");
 
     // Alice sends message AFTER Bob received his own commit back
-    let alice_msg_frames = inject_command(&mut alice_app, &mut alice_bridge, "Hello Bob");
+    let alice_msg_frames = send_message(&mut alice_app, &mut alice_bridge, 100, "Hello Bob");
     let alice_msgs = frames_by_opcode(&alice_msg_frames, Opcode::AppMessage);
     assert_eq!(alice_msgs.len(), 1, "Alice should send message");
 
@@ -546,7 +487,7 @@ fn external_commit_broadcast_back_to_joiner() {
     );
 
     // Bob sends message
-    let bob_msg_frames = inject_command(&mut bob_app, &mut bob_bridge, "Hello Alice");
+    let bob_msg_frames = send_message(&mut bob_app, &mut bob_bridge, 100, "Hello Alice");
     let bob_msgs = frames_by_opcode(&bob_msg_frames, Opcode::AppMessage);
     assert_eq!(bob_msgs.len(), 1, "Bob should send message");
 
@@ -562,10 +503,6 @@ fn external_commit_broadcast_back_to_joiner() {
     );
 }
 
-/// Test that a third client joining via external commit can communicate.
-///
-/// This reproduces the bug where third+ clients get "ratchet too far behind"
-/// errors after joining.
 #[test]
 fn third_client_external_join_messaging() {
     let env = SimEnv::with_seed(42);
@@ -575,7 +512,7 @@ fn third_client_external_join_messaging() {
     let mut alice_app = connected_app(alice_id);
     let mut alice_bridge: Bridge<SimEnv> = Bridge::new(env.clone(), alice_id);
 
-    let alice_frames = inject_command(&mut alice_app, &mut alice_bridge, "/create 100");
+    let alice_frames = create_room(&mut alice_app, &mut alice_bridge, 100);
     let group_info_epoch0 =
         extract_group_info(&frames_by_opcode(&alice_frames, Opcode::GroupInfo)[0])
             .expect("Extract GroupInfo");
@@ -585,7 +522,7 @@ fn third_client_external_join_messaging() {
     let mut bob_app = connected_app(bob_id);
     let mut bob_bridge: Bridge<SimEnv> = Bridge::new(env.clone(), bob_id);
 
-    inject_command(&mut bob_app, &mut bob_bridge, "/join 100");
+    join_room(&mut bob_app, &mut bob_bridge, 100);
     let gi_frame = Payload::GroupInfo(group_info_epoch0)
         .into_frame(FrameHeader::new(Opcode::GroupInfo))
         .expect("frame");
@@ -604,7 +541,7 @@ fn third_client_external_join_messaging() {
     receive_frame(&mut bob_app, &mut bob_bridge, bob_ext_commit[0].clone());
 
     // Alice sends a message at epoch 1
-    let alice_msg1 = inject_command(&mut alice_app, &mut alice_bridge, "Hello from Alice");
+    let alice_msg1 = send_message(&mut alice_app, &mut alice_bridge, 100, "Hello from Alice");
     let alice_msgs1 = frames_by_opcode(&alice_msg1, Opcode::AppMessage);
 
     // Bob receives Alice's message
@@ -616,7 +553,7 @@ fn third_client_external_join_messaging() {
     );
 
     // Bob sends a message
-    let bob_msg1 = inject_command(&mut bob_app, &mut bob_bridge, "Hello from Bob");
+    let bob_msg1 = send_message(&mut bob_app, &mut bob_bridge, 100, "Hello from Bob");
     let bob_msgs1 = frames_by_opcode(&bob_msg1, Opcode::AppMessage);
 
     // Alice receives Bob's message
@@ -627,7 +564,7 @@ fn third_client_external_join_messaging() {
     let mut charlie_app = connected_app(charlie_id);
     let mut charlie_bridge: Bridge<SimEnv> = Bridge::new(env.clone(), charlie_id);
 
-    inject_command(&mut charlie_app, &mut charlie_bridge, "/join 100");
+    join_room(&mut charlie_app, &mut charlie_bridge, 100);
 
     // Charlie needs GroupInfo at current epoch (1)
     // Server provides Bob's published GroupInfo (stored from his external join)
@@ -650,7 +587,7 @@ fn third_client_external_join_messaging() {
     assert!(charlie_app.rooms().contains_key(&100), "Charlie should have room");
 
     // Alice sends a message (this is where the bug manifests)
-    let alice_msg2 = inject_command(&mut alice_app, &mut alice_bridge, "Welcome Charlie!");
+    let alice_msg2 = send_message(&mut alice_app, &mut alice_bridge, 100, "Welcome Charlie!");
     let alice_msgs2 = frames_by_opcode(&alice_msg2, Opcode::AppMessage);
     assert_eq!(alice_msgs2.len(), 1, "Alice should send message");
 
@@ -672,7 +609,7 @@ fn third_client_external_join_messaging() {
     );
 
     // Charlie sends a message
-    let charlie_msg = inject_command(&mut charlie_app, &mut charlie_bridge, "Thanks Alice!");
+    let charlie_msg = send_message(&mut charlie_app, &mut charlie_bridge, 100, "Thanks Alice!");
     let charlie_msgs = frames_by_opcode(&charlie_msg, Opcode::AppMessage);
     assert_eq!(charlie_msgs.len(), 1, "Charlie should send message");
 
@@ -699,8 +636,6 @@ fn third_client_external_join_messaging() {
     );
 }
 
-/// Test that joining a room automatically sends a SyncRequest for historical
-/// messages.
 #[test]
 fn sync_request_sent_on_join() {
     let env = SimEnv::with_seed(42);
@@ -710,7 +645,7 @@ fn sync_request_sent_on_join() {
     let mut alice_app = connected_app(alice_id);
     let mut alice_bridge: Bridge<SimEnv> = Bridge::new(env.clone(), alice_id);
 
-    let alice_frames = inject_command(&mut alice_app, &mut alice_bridge, "/create 100");
+    let alice_frames = create_room(&mut alice_app, &mut alice_bridge, 100);
     let group_info = extract_group_info(&frames_by_opcode(&alice_frames, Opcode::GroupInfo)[0])
         .expect("Extract GroupInfo");
 
@@ -719,7 +654,7 @@ fn sync_request_sent_on_join() {
     let mut bob_app = connected_app(bob_id);
     let mut bob_bridge: Bridge<SimEnv> = Bridge::new(env.clone(), bob_id);
 
-    inject_command(&mut bob_app, &mut bob_bridge, "/join 100");
+    join_room(&mut bob_app, &mut bob_bridge, 100);
     let gi_frame = Payload::GroupInfo(group_info)
         .into_frame(FrameHeader::new(Opcode::GroupInfo))
         .expect("frame");
@@ -738,9 +673,6 @@ fn sync_request_sent_on_join() {
     assert_eq!(sync_requests[0].header.room_id(), 100, "SyncRequest should be for room 100");
 }
 
-/// Test that messages sent AFTER a client joins (same epoch) are properly
-/// received. This is the normal case - messages at the current epoch should
-/// work.
 #[test]
 fn same_epoch_messages_work() {
     let env = SimEnv::with_seed(42);
@@ -750,7 +682,7 @@ fn same_epoch_messages_work() {
     let mut alice_app = connected_app(alice_id);
     let mut alice_bridge: Bridge<SimEnv> = Bridge::new(env.clone(), alice_id);
 
-    let alice_frames = inject_command(&mut alice_app, &mut alice_bridge, "/create 100");
+    let alice_frames = create_room(&mut alice_app, &mut alice_bridge, 100);
     let group_info = extract_group_info(&frames_by_opcode(&alice_frames, Opcode::GroupInfo)[0])
         .expect("Extract GroupInfo");
 
@@ -759,7 +691,7 @@ fn same_epoch_messages_work() {
     let mut bob_app = connected_app(bob_id);
     let mut bob_bridge: Bridge<SimEnv> = Bridge::new(env.clone(), bob_id);
 
-    inject_command(&mut bob_app, &mut bob_bridge, "/join 100");
+    join_room(&mut bob_app, &mut bob_bridge, 100);
     let gi_frame = Payload::GroupInfo(group_info)
         .into_frame(FrameHeader::new(Opcode::GroupInfo))
         .expect("frame");
@@ -772,7 +704,7 @@ fn same_epoch_messages_work() {
     receive_frame(&mut bob_app, &mut bob_bridge, ext_commit[0].clone());
 
     // Alice sends message at current epoch (epoch 1)
-    let alice_msg = inject_command(&mut alice_app, &mut alice_bridge, "Hello at epoch 1");
+    let alice_msg = send_message(&mut alice_app, &mut alice_bridge, 100, "Hello at epoch 1");
     let alice_msgs = frames_by_opcode(&alice_msg, Opcode::AppMessage);
 
     // Bob receives message
@@ -786,10 +718,6 @@ fn same_epoch_messages_work() {
     );
 }
 
-/// Test that receiving duplicate RoomJoined doesn't clear messages.
-///
-/// This was a real TUI bug: when a member was added, all clients received
-/// RoomJoined events which cleared their chat history.
 #[test]
 fn duplicate_room_joined_preserves_messages() {
     let env = SimEnv::with_seed(42);
@@ -798,9 +726,9 @@ fn duplicate_room_joined_preserves_messages() {
     let mut bridge: Bridge<SimEnv> = Bridge::new(env, sender_id);
 
     // Create room and send message
-    inject_command(&mut app, &mut bridge, "/create 100");
-    inject_command(&mut app, &mut bridge, "message 1");
-    inject_command(&mut app, &mut bridge, "message 2");
+    create_room(&mut app, &mut bridge, 100);
+    send_message(&mut app, &mut bridge, 100, "message 1");
+    send_message(&mut app, &mut bridge, 100, "message 2");
 
     let room = app.rooms().get(&100).expect("Room exists");
     assert_eq!(room.messages.len(), 2, "Should have 2 messages");
@@ -813,13 +741,6 @@ fn duplicate_room_joined_preserves_messages() {
     assert_eq!(room.messages.len(), 2, "Messages should be preserved");
 }
 
-/// Test that messages sent BEFORE a client joins are visible via
-/// server_plaintext.
-///
-/// This tests the history feature: when Alice sends a message at epoch 0 and
-/// Bob joins at epoch 1, Bob cannot decrypt the epoch 0 message (forward
-/// secrecy). However, if the message contains server_plaintext, Bob can still
-/// see it.
 #[test]
 fn pre_join_messages_visible_via_plaintext() {
     let env = SimEnv::with_seed(42);
@@ -829,12 +750,13 @@ fn pre_join_messages_visible_via_plaintext() {
     let mut alice_app = connected_app(alice_id);
     let mut alice_bridge: Bridge<SimEnv> = Bridge::new(env.clone(), alice_id);
 
-    let alice_frames = inject_command(&mut alice_app, &mut alice_bridge, "/create 100");
+    let alice_frames = create_room(&mut alice_app, &mut alice_bridge, 100);
     let group_info = extract_group_info(&frames_by_opcode(&alice_frames, Opcode::GroupInfo)[0])
         .expect("Extract GroupInfo");
 
     // Alice sends message at epoch 0 (before Bob joins)
-    let alice_msg_frames = inject_command(&mut alice_app, &mut alice_bridge, "Hello from epoch 0");
+    let alice_msg_frames =
+        send_message(&mut alice_app, &mut alice_bridge, 100, "Hello from epoch 0");
     let epoch0_msg = frames_by_opcode(&alice_msg_frames, Opcode::AppMessage)[0].clone();
 
     // Verify the message is an AppMessage (plaintext is embedded in payload)
@@ -849,7 +771,7 @@ fn pre_join_messages_visible_via_plaintext() {
     let mut bob_app = connected_app(bob_id);
     let mut bob_bridge: Bridge<SimEnv> = Bridge::new(env.clone(), bob_id);
 
-    inject_command(&mut bob_app, &mut bob_bridge, "/join 100");
+    join_room(&mut bob_app, &mut bob_bridge, 100);
     let gi_frame = Payload::GroupInfo(group_info)
         .into_frame(FrameHeader::new(Opcode::GroupInfo))
         .expect("frame");

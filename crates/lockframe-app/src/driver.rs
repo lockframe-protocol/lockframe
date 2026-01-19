@@ -9,24 +9,13 @@ use std::{future::Future, ops::Sub, time::Duration};
 
 use lockframe_proto::Frame;
 
-use crate::{App, AppEvent};
+use crate::{App, AppAction};
 
 /// Abstracts I/O operations for the application runtime.
 ///
 /// Implementations provide platform-specific I/O while the generic
-/// [`Runtime`](crate::Runtime) handles orchestration logic. This ensures
+/// [`crate::Runtime`] handles orchestration logic. This ensures
 /// the same orchestration code runs in production TUI and simulation.
-///
-/// # Implementations
-///
-/// - **TUI**: Uses crossterm for terminal events, quinn for QUIC transport
-/// - **Simulation**: Uses turmoil for deterministic network simulation
-/// - **Web**: Could use browser events and WebSocket/WebRTC
-///
-/// # Associated Types
-///
-/// - [`Error`](Driver::Error): Platform-specific error type
-/// - [`Instant`](Driver::Instant): Time representation (real or virtual)
 pub trait Driver: Send {
     /// Platform-specific error type.
     type Error: std::error::Error + Send + 'static;
@@ -34,10 +23,13 @@ pub trait Driver: Send {
     /// Time instant type. Enables virtual time in simulation.
     type Instant: Copy + Ord + Send + Sync + Sub<Output = Duration>;
 
-    /// Poll for the next input event.
+    /// Poll for input and return actions to process.
     ///
-    /// Returns avaliable events or `None` if no events are ready.
-    fn poll_event(&mut self) -> impl Future<Output = Result<Option<AppEvent>, Self::Error>> + Send;
+    /// Returns empty vector if no input is ready.
+    fn poll_event(
+        &mut self,
+        app: &mut App,
+    ) -> impl Future<Output = Result<Vec<AppAction>, Self::Error>> + Send;
 
     /// Send a frame to the server.
     ///

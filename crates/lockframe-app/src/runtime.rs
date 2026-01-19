@@ -72,11 +72,9 @@ where
     ///
     /// Returns `true` if the application should quit.
     async fn process_cycle(&mut self) -> Result<bool, D::Error> {
-        if let Some(event) = self.driver.poll_event().await? {
-            let actions = self.app.handle(event);
-            if self.process_actions(actions).await? {
-                return Ok(true);
-            }
+        let actions = self.driver.poll_event(&mut self.app).await?;
+        if !actions.is_empty() && self.process_actions(actions).await? {
+            return Ok(true);
         }
 
         if self.driver.is_connected() {

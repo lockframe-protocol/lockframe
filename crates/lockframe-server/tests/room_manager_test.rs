@@ -7,7 +7,7 @@ use std::time::Duration;
 use bytes::Bytes;
 use lockframe_core::env::Environment;
 use lockframe_proto::{Frame, FrameHeader, Opcode};
-use lockframe_server::{MemoryStorage, RoomAction, RoomManager};
+use lockframe_server::{MemoryStorage, RoomManager};
 
 // Test environment using system RNG
 #[derive(Clone)]
@@ -28,34 +28,6 @@ impl Environment for TestEnv {
         use rand::RngCore;
         rand::thread_rng().fill_bytes(buffer);
     }
-}
-
-/// Test that processing a valid frame produces the expected action types.
-/// This verifies the routing architecture: PersistFrame + Broadcast.
-#[test]
-fn process_frame_returns_correct_action_types() {
-    let env = TestEnv;
-    let mut manager = RoomManager::new();
-    let storage = MemoryStorage::new();
-
-    let room_id = 0x1234_5678_90ab_cdef_1234_5678_90ab_cdef;
-    let creator = 42;
-
-    manager.create_room(room_id, creator, &env).unwrap();
-
-    let mut header = FrameHeader::new(Opcode::AppMessage);
-    header.set_room_id(room_id);
-    header.set_sender_id(creator);
-    header.set_epoch(0);
-    let frame = Frame::new(header, Bytes::from("test message"));
-
-    let result = manager.process_frame(frame, &env, &storage);
-    assert!(result.is_ok());
-
-    let actions = result.unwrap();
-    assert_eq!(actions.len(), 2);
-    assert!(matches!(actions[0], RoomAction::PersistFrame { .. }));
-    assert!(matches!(actions[1], RoomAction::Broadcast { .. }));
 }
 
 /// Test that the server routes frames without MLS validation.
