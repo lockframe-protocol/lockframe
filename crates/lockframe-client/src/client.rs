@@ -407,10 +407,11 @@ impl<E: Environment> Client<E> {
             let room = self.rooms.get_mut(&room_id).expect("checked above");
 
             if is_own_commit && room.mls_group.has_pending_commit() {
-                room.mls_group
+                let mls_actions = room
+                    .mls_group
                     .merge_pending_commit()
                     .map_err(|e| ClientError::Mls { reason: e.to_string() })?;
-                Vec::new()
+                self.convert_mls_actions(room_id, mls_actions)
             } else if is_own_commit && !room.mls_group.has_mls_pending_commit() {
                 // The MLS group is already at the committed epoch, so we should
                 // skip processing entirely to avoid reinitializing sender keys.

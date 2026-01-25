@@ -299,7 +299,7 @@ impl<E: Environment> MlsGroup<E> {
     ///
     /// This is called when we created a commit (e.g., via add_members) and
     /// the sequencer has confirmed it. This advances the group's epoch.
-    pub fn merge_pending_commit(&mut self) -> Result<(), MlsError> {
+    pub fn merge_pending_commit(&mut self) -> Result<Vec<MlsAction>, MlsError> {
         let expected_epoch = self
             .pending_commit
             .as_ref()
@@ -319,7 +319,13 @@ impl<E: Environment> MlsGroup<E> {
 
         self.pending_commit = None;
 
-        Ok(())
+        let group_info_bytes = self.export_group_info()?;
+
+        Ok(vec![MlsAction::PublishGroupInfo {
+            room_id: self.room_id,
+            epoch: actual_epoch,
+            group_info_bytes,
+        }])
     }
 
     /// Check if the OpenMLS group has a pending commit.
@@ -401,12 +407,7 @@ impl<E: Environment> MlsGroup<E> {
                     .map_err(|e| MlsError::Crypto(format!("Failed to merge commit: {}", e)))?;
 
                 let new_epoch = self.epoch();
-                debug_assert!(
-                    new_epoch > old_epoch,
-                    "invariant: epoch must increase after commit ({} -> {})",
-                    old_epoch,
-                    new_epoch
-                );
+                debug_assert!(new_epoch > old_epoch);
 
                 actions.push(MlsAction::Log {
                     message: format!("Advanced to epoch {}", self.epoch()),
@@ -415,6 +416,13 @@ impl<E: Environment> MlsGroup<E> {
                 if !self.mls_group.is_active() {
                     actions.push(MlsAction::RemoveGroup {
                         reason: "Removed from group by commit".to_string(),
+                    });
+                } else {
+                    let group_info_bytes = self.export_group_info()?;
+                    actions.push(MlsAction::PublishGroupInfo {
+                        room_id: self.room_id,
+                        epoch: new_epoch,
+                        group_info_bytes,
                     });
                 }
             },
