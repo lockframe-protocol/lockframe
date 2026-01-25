@@ -19,6 +19,7 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
+pub mod cluster;
 pub mod invariants;
 pub mod model;
 pub mod scenario;
@@ -27,6 +28,7 @@ pub mod sim_env;
 pub mod sim_server;
 pub mod sim_transport;
 
+pub use cluster::TestCluster;
 pub use invariants::{
     ActiveRoomInRooms, ClientSnapshot, EpochMonotonicity, Invariant, InvariantKind,
     InvariantRegistry, InvariantResult, MembershipConsistency, RoomSnapshot, SystemSnapshot,
