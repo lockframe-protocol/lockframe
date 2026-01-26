@@ -6,12 +6,15 @@
 mod chaotic;
 mod error;
 mod memory;
+mod redb;
 
 pub use chaotic::ChaoticStorage;
 pub use error::StorageError;
 use lockframe_core::mls::MlsGroupState;
 use lockframe_proto::Frame;
 pub use memory::MemoryStorage;
+
+pub use self::redb::RedbStorage;
 
 /// Storage abstraction for frames and MLS group state
 ///

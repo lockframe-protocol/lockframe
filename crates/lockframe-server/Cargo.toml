@@ -43,6 +43,12 @@ clap = { version = "4", features = ["derive"] }
 # Cryptographic randomness
 getrandom = "0.3"
 
+# Persistent storage
+redb = "2"
+
+# CBOR serialization (for MLS state)
+ciborium = "0.2"
+
 [dev-dependencies]
 # Testing utilities
 tempfile = "3"
