@@ -11,8 +11,11 @@
 use bytes::Bytes;
 use lockframe_core::mls::MlsGroupState;
 use lockframe_proto::{Frame, FrameHeader, Opcode};
-use lockframe_server::storage::{ChaoticStorage, MemoryStorage, Storage, StorageError};
+use lockframe_server::storage::{
+    ChaoticStorage, MemoryStorage, RedbStorage, Storage, StorageError,
+};
 use proptest::prelude::*;
+use tempfile::tempdir;
 
 /// Helper to create a test frame
 fn create_test_frame(room_id: u128, log_index: u64, payload: Vec<u8>) -> Frame {
@@ -183,14 +186,12 @@ fn prop_storage_chaos_mls_state_consistency() {
         let storage = ChaoticStorage::with_seed(MemoryStorage::new(), failure_rate, seed);
         let members: Vec<u64> = (0..member_count).map(|i| i as u64).collect();
         let tree_hash = [42u8; 32];
-        let openmls_state = vec![0xde, 0xad];
 
         let state = MlsGroupState::new(
             room_id,
             epoch,
             tree_hash,
             members.clone(),
-            openmls_state
         );
 
         let store_result = storage.store_mls_state(room_id, &state);
@@ -231,7 +232,6 @@ fn prop_storage_chaos_mls_state_overwrite() {
                 *epoch,
                 [i as u8; 32], // Different tree_hash each time
                 vec![i as u64],
-                vec![i as u8],
             );
 
             storage.store_mls_state(room_id, &state)
@@ -410,6 +410,91 @@ fn prop_storage_sequential_batch_writes() {
         // ORACLE: Sequential indices across all batches
         for (i, frame) in loaded.iter().enumerate() {
             prop_assert_eq!(frame.header.log_index(), i as u64);
+        }
+    });
+}
+
+#[test]
+fn prop_redb_storage_atomic_writes() {
+    proptest!(|(
+        room_id in any::<u128>(),
+        frame_count in 10usize..50,
+    )| {
+        let dir = tempdir().unwrap();
+        let storage = RedbStorage::open(dir.path().join("test.redb")).unwrap();
+
+        for i in 0..frame_count {
+            let frame = create_test_frame(room_id, i as u64, vec![i as u8]);
+            storage.store_frame(room_id, i as u64, &frame)
+                .expect("sequential write should succeed");
+        }
+
+        // ORACLE: Verify sequence is intact
+        let frames = storage.load_frames(room_id, 0, frame_count + 10).unwrap();
+        prop_assert_eq!(frames.len(), frame_count);
+
+        for (i, frame) in frames.iter().enumerate() {
+            prop_assert_eq!(frame.header.log_index(), i as u64);
+        }
+
+        let latest = storage.latest_log_index(room_id).unwrap();
+        prop_assert_eq!(latest, Some(frame_count as u64 - 1));
+    });
+}
+
+#[test]
+fn prop_redb_storage_conflict_detection() {
+    proptest!(|(
+        room_id in any::<u128>(),
+        initial_frames in 1usize..10,
+        gap_size in 1u64..10,
+    )| {
+        let dir = tempdir().unwrap();
+        let storage = RedbStorage::open(dir.path().join("test.redb")).unwrap();
+
+        for i in 0..initial_frames {
+            let frame = create_test_frame(room_id, i as u64, vec![i as u8]);
+            storage.store_frame(room_id, i as u64, &frame)
+                .expect("sequential write should succeed");
+        }
+
+        let gap_index = initial_frames as u64 + gap_size;
+        let frame = create_test_frame(room_id, gap_index, vec![0xff]);
+        let result = storage.store_frame(room_id, gap_index, &frame);
+
+        match result {
+            Err(StorageError::Conflict { expected, got }) => {
+                prop_assert_eq!(expected, initial_frames as u64);
+                prop_assert_eq!(got, gap_index);
+            }
+            Ok(()) => panic!("Gap should have failed"),
+            Err(e) => panic!("Expected Conflict, got: {:?}", e),
+        }
+    });
+}
+
+#[test]
+fn prop_redb_storage_mls_state_consistency() {
+    proptest!(|(
+        room_id in any::<u128>(),
+        epoch in 0u64..1000,
+        member_count in 1usize..10,
+    )| {
+        let dir = tempdir().unwrap();
+        let storage = RedbStorage::open(dir.path().join("test.redb")).unwrap();
+
+        let members: Vec<u64> = (0..member_count).map(|i| i as u64).collect();
+        let state = MlsGroupState::new(room_id, epoch, [42u8; 32], members.clone());
+
+        storage.store_mls_state(room_id, &state).unwrap();
+
+        let loaded = storage.load_mls_state(room_id).unwrap().unwrap();
+
+        prop_assert_eq!(loaded.epoch, epoch);
+        prop_assert_eq!(loaded.member_count(), member_count);
+
+        for member_id in members {
+            prop_assert!(loaded.is_member(member_id));
         }
     });
 }
