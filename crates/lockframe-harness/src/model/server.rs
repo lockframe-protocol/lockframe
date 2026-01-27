@@ -155,6 +155,8 @@ impl ModelServer {
     }
 
     /// Remove a member from a room.
+    ///
+    /// Rooms persist even when all members leave.
     pub fn remove_member(
         &mut self,
         room_id: ModelRoomId,
@@ -164,10 +166,6 @@ impl ModelServer {
 
         if !room.members.remove(&client_id) {
             return Err(OperationError::NotMember);
-        }
-
-        if room.members.is_empty() {
-            self.rooms.remove(&room_id);
         }
 
         Ok(())

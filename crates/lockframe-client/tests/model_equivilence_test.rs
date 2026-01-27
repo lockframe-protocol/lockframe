@@ -41,6 +41,7 @@ struct RealWorld {
     partitioned: HashMap<ClientId, bool>,
     disconnected: HashMap<ClientId, bool>,
     group_info: HashMap<ModelRoomId, Vec<u8>>,
+    server_rooms: HashMap<ModelRoomId, bool>,
 }
 
 const KEY_PACKAGES_PER_CLIENT: usize = 10;
@@ -78,6 +79,7 @@ impl RealWorld {
             partitioned: HashMap::new(),
             disconnected: HashMap::new(),
             group_info: HashMap::new(),
+            server_rooms: HashMap::new(),
         }
     }
 
@@ -330,17 +332,19 @@ impl RealWorld {
             return OperationResult::Error(OperationError::AlreadyMember);
         }
 
-        let group_info_bytes = match self.group_info.get(&room_id) {
-            Some(gi) => gi.clone(),
-            None => return OperationResult::Error(OperationError::NoGroupInfo),
-        };
-
         let real_room_id = room_id as u128 + 1;
 
         let joiner = &mut self.clients[joiner_id as usize];
         if joiner.handle(ClientEvent::ExternalJoin { room_id: real_room_id }).is_err() {
             return OperationResult::Error(OperationError::NoGroupInfo);
         }
+
+        let group_info_bytes = match self.group_info.get(&room_id) {
+            Some(gi) => gi.clone(),
+            None => {
+                return OperationResult::Error(OperationError::NoGroupInfo);
+            },
+        };
 
         let current_epoch = self
             .room_epochs
@@ -507,6 +511,12 @@ impl RealWorld {
 
         let real_room_id = room_id as u128 + 1;
 
+        if self.server_rooms.contains_key(&room_id) {
+            // Room persists even after all clients disconnect to prevent multiple clients
+            // from creating separate MLS groups with the same room_id.
+            return OperationResult::Error(OperationError::RoomAlreadyExists);
+        }
+
         if self.room_membership.get(&(client_id, room_id)).copied().unwrap_or(false) {
             return OperationResult::Error(OperationError::RoomAlreadyExists);
         }
@@ -516,6 +526,7 @@ impl RealWorld {
 
         match result {
             Ok(actions) => {
+                self.server_rooms.insert(room_id, true);
                 self.room_membership.insert((client_id, room_id), true);
                 self.room_epochs.insert((client_id, room_id), 0);
 
@@ -523,7 +534,7 @@ impl RealWorld {
                     if let ClientAction::Send(frame) = action {
                         if frame.header.opcode_enum() == Some(Opcode::GroupInfo) {
                             if let Ok(Payload::GroupInfo(gi)) = Payload::from_frame(frame.clone()) {
-                                self.group_info.insert(room_id, gi.group_info_bytes);
+                                self.group_info.entry(room_id).or_insert(gi.group_info_bytes);
                             }
                         }
                     }
@@ -691,6 +702,13 @@ impl RealWorld {
             .map(|(&(_, rid), _)| rid)
             .collect();
 
+        // Simulate a reconnect by clearing the client's local room state
+        let client = &mut self.clients[client_id as usize];
+        for room_id in &rooms {
+            let real_room_id = *room_id as u128 + 1;
+            let _ = client.handle(ClientEvent::LeaveRoom { room_id: real_room_id });
+        }
+
         for room_id in rooms {
             self.room_membership.insert((client_id, room_id), false);
             self.room_epochs.remove(&(client_id, room_id));
@@ -701,10 +719,6 @@ impl RealWorld {
                 .filter(|&(&(_, rid), &m)| m && rid == room_id)
                 .map(|(&(cid, _), _)| cid)
                 .collect();
-
-            if remaining.is_empty() {
-                self.group_info.remove(&room_id);
-            }
 
             for cid in &remaining {
                 let epoch = self.room_epochs.entry((*cid, room_id)).or_insert(0);

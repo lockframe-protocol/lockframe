@@ -157,12 +157,16 @@ impl ModelWorld {
             return OperationResult::Error(OperationError::Disconnected);
         }
 
+        if self.server.room_exists(room_id) {
+            return OperationResult::Error(OperationError::RoomAlreadyExists);
+        }
+
         let client_result = client.create_room(room_id);
         if client_result.is_err() {
             return client_result;
         }
 
-        let _ = self.server.create_room(room_id, client_id);
+        self.server.create_room(room_id, client_id).expect("room existence already checked");
         self.server.add_member(room_id, client_id);
 
         OperationResult::Ok
@@ -424,11 +428,17 @@ impl ModelWorld {
 
         for room_id in rooms {
             let _ = self.server.remove_member(room_id, client_id);
-            self.server.advance_epoch(room_id);
 
-            for other_client in &mut self.clients {
-                if other_client.is_member(room_id) {
-                    other_client.advance_epoch(room_id);
+            // Only advance epoch if there are remaining members (they process the removal)
+            let has_remaining_members =
+                self.server.members(room_id).map(|mut m| m.any(|_| true)).unwrap_or(false);
+
+            if has_remaining_members {
+                self.server.advance_epoch(room_id);
+                for other_client in &mut self.clients {
+                    if other_client.is_member(room_id) {
+                        other_client.advance_epoch(room_id);
+                    }
                 }
             }
         }
