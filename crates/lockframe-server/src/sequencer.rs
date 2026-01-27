@@ -245,6 +245,44 @@ impl Sequencer {
     pub fn clear_room(&mut self, room_id: u128) -> bool {
         self.rooms.remove(&room_id).is_some()
     }
+
+    /// Pre-initialize a room's sequencer state from storage.
+    ///
+    /// Called during server recovery to restore room state before accepting
+    /// connections. After this call, the sequencer is ready to accept frames
+    /// for this room without querying storage again.
+    ///
+    /// If the room is already initialized, this is a no-op.
+    ///
+    /// # Errors
+    ///
+    /// Returns error if storage query fails.
+    pub fn initialize_room(
+        &mut self,
+        room_id: u128,
+        storage: &impl Storage,
+    ) -> Result<(), SequencerError> {
+        if self.rooms.contains_key(&room_id) {
+            return Ok(());
+        }
+
+        let latest_index = storage
+            .latest_log_index(room_id)
+            .map_err(|e| SequencerError::Storage(e.to_string()))?;
+
+        let next_log_index = latest_index.map(|i| i + 1).unwrap_or(0);
+
+        tracing::info!(
+            room_id = %room_id,
+            latest_storage_index = ?latest_index,
+            next_log_index,
+            "Pre-initializing sequencer for room during recovery"
+        );
+
+        self.rooms.insert(room_id, RoomSequencer { next_log_index });
+
+        Ok(())
+    }
 }
 
 impl Default for Sequencer {
@@ -378,5 +416,94 @@ mod tests {
         // Verify independent sequencing
         assert_eq!(sequencer.next_log_index(100), Some(3));
         assert_eq!(sequencer.next_log_index(200), Some(5));
+    }
+
+    #[test]
+    fn test_sequencer_initialize_room() {
+        let mut sequencer = Sequencer::new();
+        let storage = MemoryStorage::new();
+        let room_id = 100u128;
+
+        // Pre-populate storage with 5 frames
+        for i in 0..5 {
+            let mut frame = create_test_frame(room_id, 200, 0);
+            frame.header.set_log_index(i);
+            storage.store_frame(room_id, i, &frame).expect("store failed");
+        }
+
+        // Initialize sequencer from storage
+        sequencer.initialize_room(room_id, &storage).expect("initialize failed");
+
+        // Verify sequencer knows to start at index 5
+        assert_eq!(sequencer.next_log_index(room_id), Some(5));
+
+        // Next frame should be assigned index 5
+        let frame = create_test_frame(room_id, 200, 0);
+        let actions = sequencer.process_frame(frame, &storage).expect("sequencing failed");
+
+        // Should succeed with index 5
+        match &actions[0] {
+            SequencerAction::AcceptFrame { log_index, .. } => {
+                assert_eq!(*log_index, 5);
+            },
+            _ => panic!("Expected AcceptFrame"),
+        }
+    }
+
+    #[test]
+    fn test_sequencer_initialize_empty_room() {
+        let mut sequencer = Sequencer::new();
+        let storage = MemoryStorage::new();
+        let room_id = 100u128;
+
+        // No frames in storage, room doesn't exist yet
+        // initialize_room should handle this gracefully (next_log_index = 0)
+        sequencer.initialize_room(room_id, &storage).expect("initialize failed");
+
+        // Verify sequencer starts at index 0
+        assert_eq!(sequencer.next_log_index(room_id), Some(0));
+
+        // First frame should be at index 0
+        let frame = create_test_frame(room_id, 200, 0);
+        let actions = sequencer.process_frame(frame, &storage).expect("sequencing failed");
+
+        match &actions[0] {
+            SequencerAction::AcceptFrame { log_index, .. } => {
+                assert_eq!(*log_index, 0);
+            },
+            _ => panic!("Expected AcceptFrame"),
+        }
+    }
+
+    #[test]
+    fn test_sequencer_initialize_idempotent() {
+        let mut sequencer = Sequencer::new();
+        let storage = MemoryStorage::new();
+        let room_id = 100u128;
+
+        // Pre-populate storage with 5 frames
+        for i in 0..5 {
+            let mut frame = create_test_frame(room_id, 200, 0);
+            frame.header.set_log_index(i);
+            storage.store_frame(room_id, i, &frame).expect("store failed");
+        }
+
+        // Initialize twice (should be idempotent)
+        sequencer.initialize_room(room_id, &storage).expect("first initialize failed");
+        sequencer.initialize_room(room_id, &storage).expect("second initialize failed");
+
+        // Verify sequencer state is correct
+        assert_eq!(sequencer.next_log_index(room_id), Some(5));
+
+        // Should still work correctly
+        let frame = create_test_frame(room_id, 200, 0);
+        let actions = sequencer.process_frame(frame, &storage).expect("sequencing failed");
+
+        match &actions[0] {
+            SequencerAction::AcceptFrame { log_index, .. } => {
+                assert_eq!(*log_index, 5);
+            },
+            _ => panic!("Expected AcceptFrame"),
+        }
     }
 }

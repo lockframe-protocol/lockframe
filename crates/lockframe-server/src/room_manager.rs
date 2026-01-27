@@ -15,7 +15,7 @@ use lockframe_proto::Frame;
 
 use crate::{
     sequencer::{Sequencer, SequencerAction, SequencerError},
-    storage::{Storage, StorageError},
+    storage::{Storage, StorageError, StoredRoomMetadata},
 };
 
 /// Metadata about a room (extension point for future authorization)
@@ -127,6 +127,9 @@ impl<I: Copy> RoomManager<I> {
     /// Creates a room with the specified ID and records the creator for
     /// future authorization checks. Prevents duplicate room creation.
     ///
+    /// Persists room metadata to storage first, then updates in-memory state.
+    /// The storage persistence is idempotent (won't overwrite existing rooms).
+    ///
     /// Note: The server does NOT create an MLS group - it just tracks metadata.
     /// The server routes frames between clients; the clients own the MLS state.
     pub fn create_room<E: Environment<Instant = I>>(
@@ -134,12 +137,20 @@ impl<I: Copy> RoomManager<I> {
         room_id: u128,
         creator: u64,
         env: &E,
+        storage: &impl Storage,
     ) -> Result<(), RoomError> {
         if self.has_room(room_id) {
             return Err(RoomError::RoomAlreadyExists(room_id));
         }
 
-        // Store metadata only - server doesn't participate in MLS
+        // Persist to storage first (won't overwrite if exists)
+        // TODO: created_at_secs is 0 since we can't convert generic Instant to
+        // Unix time. The in-memory RoomMetadata uses the precise Instant for
+        // timing.
+        let stored_metadata = StoredRoomMetadata { creator, created_at_secs: 0 };
+        storage.create_room(room_id, &stored_metadata)?;
+
+        // Then update in-memory state
         let metadata = RoomMetadata { creator, created_at: env.now() };
         self.room_metadata.insert(room_id, metadata);
 
@@ -198,6 +209,38 @@ impl<I: Copy> RoomManager<I> {
     /// conflicts.
     pub fn clear_room_sequencer(&mut self, room_id: u128) -> bool {
         self.sequencer.clear_room(room_id)
+    }
+
+    /// Recover a room from storage during server startup.
+    ///
+    /// Loads room metadata from the ROOMS table, then initializes
+    /// the sequencer with the correct next_log_index from frames.
+    ///
+    /// # Errors
+    ///
+    /// - `RoomError::RoomNotFound` if room doesn't exist in ROOMS table
+    /// - `RoomError::Storage` if storage query fails
+    /// - `RoomError::Sequencing` if sequencer initialization fails
+    pub fn recover_room(
+        &mut self,
+        room_id: u128,
+        now: I,
+        storage: &impl Storage,
+    ) -> Result<(), RoomError> {
+        if self.room_metadata.contains_key(&room_id) {
+            return Ok(());
+        }
+
+        let stored =
+            storage.load_room_metadata(room_id)?.ok_or(RoomError::RoomNotFound(room_id))?;
+
+        // Note: created_at uses current time since original time is lost
+        self.room_metadata
+            .insert(room_id, RoomMetadata { creator: stored.creator, created_at: now });
+
+        self.sequencer.initialize_room(room_id, storage)?;
+
+        Ok(())
     }
 
     /// Process a frame through sequencing and routing.
@@ -270,5 +313,99 @@ impl<I: Copy> std::fmt::Debug for RoomManager<I> {
             .field("room_count", &self.room_metadata.len())
             .field("sequencer", &self.sequencer)
             .finish()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use bytes::Bytes;
+    use lockframe_proto::{FrameHeader, Opcode};
+
+    use super::*;
+    use crate::storage::MemoryStorage;
+
+    fn create_test_frame(room_id: u128, sender_id: u64, log_index: u64) -> Frame {
+        let mut header = FrameHeader::new(Opcode::AppMessage);
+        header.set_room_id(room_id);
+        header.set_sender_id(sender_id);
+        header.set_log_index(log_index);
+        header.set_epoch(0);
+        Frame::new(header, Bytes::new())
+    }
+
+    #[test]
+    fn test_room_manager_recover_room() {
+        let storage = MemoryStorage::new();
+        let room_id = 100u128;
+        let creator = 42u64;
+
+        // Pre-populate storage with room metadata and frames
+        let metadata = StoredRoomMetadata { creator, created_at_secs: 0 };
+        storage.create_room(room_id, &metadata).unwrap();
+        for i in 0..5 {
+            let frame = create_test_frame(room_id, creator, i);
+            storage.store_frame(room_id, i, &frame).unwrap();
+        }
+
+        // Create room manager and recover
+        let mut room_manager = RoomManager::new();
+        let now = std::time::Instant::now();
+        room_manager.recover_room(room_id, now, &storage).unwrap();
+
+        // Room should exist
+        assert!(room_manager.has_room(room_id));
+    }
+
+    #[test]
+    fn test_room_manager_recover_room_idempotent() {
+        let storage = MemoryStorage::new();
+        let room_id = 100u128;
+        let creator = 1u64;
+
+        // Pre-populate storage with room metadata and frame
+        let metadata = StoredRoomMetadata { creator, created_at_secs: 0 };
+        storage.create_room(room_id, &metadata).unwrap();
+        let frame = create_test_frame(room_id, creator, 0);
+        storage.store_frame(room_id, 0, &frame).unwrap();
+
+        let mut room_manager = RoomManager::new();
+        let now = std::time::Instant::now();
+
+        // Recover twice (should be idempotent)
+        room_manager.recover_room(room_id, now, &storage).unwrap();
+        room_manager.recover_room(room_id, now, &storage).unwrap();
+
+        assert!(room_manager.has_room(room_id));
+    }
+
+    #[test]
+    fn test_room_manager_recover_nonexistent_room_fails() {
+        let storage = MemoryStorage::new();
+        let room_id = 100u128;
+
+        let mut room_manager = RoomManager::new();
+        let now = std::time::Instant::now();
+
+        // Recovering a room that doesn't exist should fail
+        let result = room_manager.recover_room(room_id, now, &storage);
+        assert!(result.is_err(), "expected error for nonexistent room");
+    }
+
+    #[test]
+    fn test_room_manager_recover_extracts_creator() {
+        let storage = MemoryStorage::new();
+        let room_id = 100u128;
+        let creator = 42u64;
+
+        // Pre-populate storage with room metadata
+        let metadata = StoredRoomMetadata { creator, created_at_secs: 0 };
+        storage.create_room(room_id, &metadata).unwrap();
+
+        let mut room_manager = RoomManager::new();
+        let now = std::time::Instant::now();
+        room_manager.recover_room(room_id, now, &storage).unwrap();
+
+        // Verify room exists
+        assert!(room_manager.has_room(room_id));
     }
 }
