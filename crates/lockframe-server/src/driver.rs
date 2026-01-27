@@ -1035,7 +1035,7 @@ where
 
         let user_id = info.user_id.unwrap_or(creator_session_id);
 
-        self.room_manager.create_room(room_id, user_id, &self.env)?;
+        self.room_manager.create_room(room_id, user_id, &self.env, &self.storage)?;
         self.registry.subscribe(creator_session_id, room_id);
 
         Ok(vec![ServerAction::Log {
@@ -1091,6 +1091,39 @@ where
     pub fn clear_room_sequencer(&mut self, room_id: u128) -> bool {
         self.room_manager.clear_room_sequencer(room_id)
     }
+
+    /// Recover all room state from storage.
+    ///
+    /// Called during server startup to restore rooms that were persisted
+    /// before a restart. After this call, the server is ready to accept
+    /// connections for all previously active rooms.
+    ///
+    /// # Errors
+    ///
+    /// - `ServerError::Storage` if storage enumeration fails
+    /// - `ServerError::Room` if room recovery fails
+    pub fn recover_from_storage(&mut self) -> Result<usize, ServerError> {
+        let room_ids = self.storage.list_rooms()?;
+
+        let room_count = room_ids.len();
+        let now = self.env.now();
+
+        tracing::info!(room_count, "Recovering rooms from storage");
+
+        for room_id in room_ids {
+            self.room_manager.recover_room(room_id, now, &self.storage)?;
+        }
+
+        tracing::info!(room_count, "Room recovery complete");
+
+        Ok(room_count)
+    }
+
+    /// Access the room manager (for testing).
+    #[cfg(test)]
+    pub fn room_manager(&self) -> &RoomManager<E::Instant> {
+        &self.room_manager
+    }
 }
 
 impl<E, S> std::fmt::Debug for ServerDriver<E, S>
@@ -1108,7 +1141,9 @@ where
 
 #[cfg(test)]
 mod tests {
+    use bytes::Bytes;
     use lockframe_core::env::test_utils::MockEnv;
+    use lockframe_proto::FrameHeader;
 
     use super::*;
     use crate::storage::MemoryStorage;
@@ -1277,5 +1312,100 @@ mod tests {
         assert_eq!(sessions.len(), 2);
         assert!(sessions.contains(&1));
         assert!(sessions.contains(&2));
+    }
+
+    #[test]
+    fn server_driver_recovery() {
+        use crate::storage::StoredRoomMetadata;
+
+        let storage = MemoryStorage::new();
+
+        // Pre-populate storage with rooms (explicit ROOMS table + frames)
+        for room_id in [100u128, 200, 300] {
+            // Create room in ROOMS table
+            let metadata = StoredRoomMetadata { creator: room_id as u64, created_at_secs: 0 };
+            storage.create_room(room_id, &metadata).unwrap();
+
+            // Add frames
+            for i in 0..3 {
+                let mut header = FrameHeader::new(Opcode::AppMessage);
+                header.set_room_id(room_id);
+                header.set_sender_id(room_id as u64);
+                header.set_log_index(i);
+                let frame = Frame::new(header, Bytes::new());
+                storage.store_frame(room_id, i, &frame).unwrap();
+            }
+        }
+
+        // Create driver
+        let env = MockEnv::with_crypto_rng();
+        let mut driver = ServerDriver::new(env, storage, ServerConfig::default());
+
+        // Recover from storage
+        let count = driver.recover_from_storage().unwrap();
+
+        assert_eq!(count, 3);
+        assert!(driver.room_manager().has_room(100));
+        assert!(driver.room_manager().has_room(200));
+        assert!(driver.room_manager().has_room(300));
+    }
+
+    #[test]
+    fn server_driver_recovery_empty_storage() {
+        let storage = MemoryStorage::new();
+        let env = MockEnv::with_crypto_rng();
+        let mut driver = ServerDriver::new(env, storage, ServerConfig::default());
+
+        // Recover from empty storage
+        let count = driver.recover_from_storage().unwrap();
+
+        assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn server_driver_recovery_processes_frames_after() {
+        use crate::storage::StoredRoomMetadata;
+
+        let storage = MemoryStorage::new();
+        let room_id = 100u128;
+        let sender_id = 42u64;
+
+        // Create room in ROOMS table
+        let metadata = StoredRoomMetadata { creator: sender_id, created_at_secs: 0 };
+        storage.create_room(room_id, &metadata).unwrap();
+
+        // Pre-populate storage with 3 frames
+        for i in 0..3 {
+            let mut header = FrameHeader::new(Opcode::AppMessage);
+            header.set_room_id(room_id);
+            header.set_sender_id(sender_id);
+            header.set_log_index(i);
+            let frame = Frame::new(header, Bytes::new());
+            storage.store_frame(room_id, i, &frame).unwrap();
+        }
+
+        // Create driver and recover
+        let env = MockEnv::with_crypto_rng();
+        let mut driver = ServerDriver::new(env, storage.clone(), ServerConfig::default());
+        driver.recover_from_storage().unwrap();
+
+        // Accept a connection and process a new frame
+        driver.process_event(ServerEvent::ConnectionAccepted { session_id: 1 }).unwrap();
+        driver.registry.update_session_info(1, SessionInfo::authenticated(sender_id));
+        driver.subscribe_to_room(1, room_id);
+
+        // Send a new frame (should get log_index 3)
+        let mut header = FrameHeader::new(Opcode::AppMessage);
+        header.set_room_id(room_id);
+        header.set_sender_id(sender_id);
+        header.set_log_index(3); // Next expected index
+        let frame = Frame::new(header, Bytes::from("new message"));
+
+        let actions =
+            driver.process_event(ServerEvent::FrameReceived { session_id: 1, frame }).unwrap();
+
+        // Should have persist and broadcast actions
+        let has_persist = actions.iter().any(|a| matches!(a, ServerAction::PersistFrame { .. }));
+        assert!(has_persist, "should have persist action for new frame");
     }
 }

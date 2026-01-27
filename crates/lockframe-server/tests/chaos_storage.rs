@@ -416,13 +416,14 @@ fn prop_storage_sequential_batch_writes() {
 
 #[test]
 fn prop_redb_storage_atomic_writes() {
-    proptest!(|(
+    let dir = tempdir().unwrap();
+    let storage = RedbStorage::open(dir.path().join("test.redb")).unwrap();
+
+    let config = ProptestConfig::with_cases(32);
+    proptest!(config, |(
         room_id in any::<u128>(),
         frame_count in 10usize..50,
     )| {
-        let dir = tempdir().unwrap();
-        let storage = RedbStorage::open(dir.path().join("test.redb")).unwrap();
-
         for i in 0..frame_count {
             let frame = create_test_frame(room_id, i as u64, vec![i as u8]);
             storage.store_frame(room_id, i as u64, &frame)
@@ -444,14 +445,15 @@ fn prop_redb_storage_atomic_writes() {
 
 #[test]
 fn prop_redb_storage_conflict_detection() {
-    proptest!(|(
+    let dir = tempdir().unwrap();
+    let storage = RedbStorage::open(dir.path().join("test.redb")).unwrap();
+
+    let config = ProptestConfig::with_cases(32);
+    proptest!(config, |(
         room_id in any::<u128>(),
         initial_frames in 1usize..10,
         gap_size in 1u64..10,
     )| {
-        let dir = tempdir().unwrap();
-        let storage = RedbStorage::open(dir.path().join("test.redb")).unwrap();
-
         for i in 0..initial_frames {
             let frame = create_test_frame(room_id, i as u64, vec![i as u8]);
             storage.store_frame(room_id, i as u64, &frame)
@@ -475,14 +477,15 @@ fn prop_redb_storage_conflict_detection() {
 
 #[test]
 fn prop_redb_storage_mls_state_consistency() {
-    proptest!(|(
+    let dir = tempdir().unwrap();
+    let storage = RedbStorage::open(dir.path().join("test.redb")).unwrap();
+
+    let config = ProptestConfig::with_cases(32);
+    proptest!(config, |(
         room_id in any::<u128>(),
         epoch in 0u64..1000,
         member_count in 1usize..10,
     )| {
-        let dir = tempdir().unwrap();
-        let storage = RedbStorage::open(dir.path().join("test.redb")).unwrap();
-
         let members: Vec<u64> = (0..member_count).map(|i| i as u64).collect();
         let state = MlsGroupState::new(room_id, epoch, [42u8; 32], members.clone());
 

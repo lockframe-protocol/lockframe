@@ -18,7 +18,7 @@ fn process_frame_routes_any_epoch() {
     let room_id = 0x1234_5678_90ab_cdef_1234_5678_90ab_cdef;
     let creator = 42;
 
-    manager.create_room(room_id, creator, &env).unwrap();
+    manager.create_room(room_id, creator, &env, &storage).unwrap();
 
     // Server is routing-only, should accept any epoch
     for epoch in [0, 1, 5, 100] {
@@ -44,7 +44,7 @@ fn process_commit_routes_without_mls_validation() {
     let room_id = 0x1234_5678_90ab_cdef_1234_5678_90ab_cdef;
     let creator = 42;
 
-    manager.create_room(room_id, creator, &env).unwrap();
+    manager.create_room(room_id, creator, &env, &storage).unwrap();
 
     let mut header = FrameHeader::new(Opcode::Commit);
     header.set_room_id(room_id);
@@ -69,7 +69,7 @@ fn process_welcome_routes_without_mls_validation() {
     let room_id = 0x1234_5678_90ab_cdef_1234_5678_90ab_cdef;
     let creator = 42;
 
-    manager.create_room(room_id, creator, &env).unwrap();
+    manager.create_room(room_id, creator, &env, &storage).unwrap();
 
     let mut header = FrameHeader::new(Opcode::Welcome);
     header.set_room_id(room_id);

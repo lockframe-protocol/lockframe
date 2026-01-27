@@ -33,8 +33,9 @@ proptest! {
     ) {
         let env = SimEnv::with_seed(seed);
         let mut manager = RoomManager::new();
+        let storage = MemoryStorage::new();
 
-        manager.create_room(room_id, creator, &env)?;
+        manager.create_room(room_id, creator, &env, &storage)?;
         prop_assert!(manager.has_room(room_id));
     }
 
@@ -47,10 +48,11 @@ proptest! {
     ) {
         let env = SimEnv::with_seed(seed);
         let mut manager = RoomManager::new();
+        let storage = MemoryStorage::new();
 
-        manager.create_room(room_id, creator, &env)?;
+        manager.create_room(room_id, creator, &env, &storage)?;
 
-        let result = manager.create_room(room_id, creator, &env);
+        let result = manager.create_room(room_id, creator, &env, &storage);
         prop_assert!(matches!(result, Err(RoomError::RoomAlreadyExists(_))));
     }
 
@@ -62,12 +64,13 @@ proptest! {
     ) {
         let env = SimEnv::with_seed(seed);
         let mut manager = RoomManager::new();
+        let storage = MemoryStorage::new();
 
         // Deduplicate to create unique ids
         let unique_ids: HashSet<u128> = room_ids.into_iter().collect();
 
         for room_id in &unique_ids {
-            manager.create_room(*room_id, 0, &env)?;
+            manager.create_room(*room_id, 0, &env, &storage)?;
         }
 
         for room_id in &unique_ids {
@@ -108,7 +111,7 @@ proptest! {
         let mut manager = RoomManager::new();
         let storage = MemoryStorage::new();
 
-        manager.create_room(room_id, creator, &env)?;
+        manager.create_room(room_id, creator, &env, &storage)?;
 
         for i in 0..total_frames {
             let mut header = FrameHeader::new(Opcode::AppMessage);
@@ -189,7 +192,7 @@ proptest! {
         let mut manager = RoomManager::new();
         let storage = MemoryStorage::new();
 
-        manager.create_room(room_id, creator, &env)?;
+        manager.create_room(room_id, creator, &env, &storage)?;
 
         let frame = create_test_frame(room_id, creator, epoch, payload);
 
