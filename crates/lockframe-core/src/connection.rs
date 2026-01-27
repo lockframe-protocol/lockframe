@@ -440,37 +440,11 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::env::Environment;
-
-    #[derive(Clone)]
-    struct TestEnv;
-
-    impl crate::env::Environment for TestEnv {
-        type Instant = Instant;
-        fn now(&self) -> Instant {
-            Instant::now()
-        }
-
-        fn sleep(&self, _duration: Duration) -> impl std::future::Future<Output = ()> + Send {
-            async {}
-        }
-
-        fn random_bytes(&self, buffer: &mut [u8]) {
-            // Deterministic for tests
-            for (i, byte) in buffer.iter_mut().enumerate() {
-                *byte = i as u8;
-            }
-        }
-
-        fn wall_clock_secs(&self) -> u64 {
-            // Fixed timestamp for tests (2024-01-01 00:00:00 UTC)
-            1704067200
-        }
-    }
+    use crate::env::{Environment, test_utils::MockEnv};
 
     #[test]
     fn connection_lifecycle() {
-        let env = TestEnv;
+        let env = MockEnv::new();
         let t0 = env.now();
         let mut conn = Connection::new(t0, ConnectionConfig::default());
 
@@ -503,7 +477,7 @@ mod tests {
 
     #[test]
     fn handle_ping_responds_with_pong() {
-        let env = TestEnv;
+        let env = MockEnv::new();
         let t0 = env.now();
         let mut conn = Connection::new(t0, ConnectionConfig::default());
 
@@ -536,7 +510,7 @@ mod tests {
 
     #[test]
     fn handle_pong_updates_activity() {
-        let env = TestEnv;
+        let env = MockEnv::new();
         let t0 = env.now();
         let mut conn = Connection::new(t0, ConnectionConfig::default());
 
@@ -566,7 +540,7 @@ mod tests {
 
     #[test]
     fn handle_ping_before_authenticated() {
-        let env = TestEnv;
+        let env = MockEnv::new();
         let t0 = env.now();
         let mut conn = Connection::new(t0, ConnectionConfig::default());
 
@@ -581,7 +555,7 @@ mod tests {
 
     #[test]
     fn server_handle_hello() {
-        let env = TestEnv;
+        let env = MockEnv::new();
         let t0 = env.now();
         let mut conn = Connection::new(t0, ConnectionConfig::default());
 
@@ -622,7 +596,7 @@ mod tests {
 
     #[test]
     fn server_hello_without_session_id() {
-        let env = TestEnv;
+        let env = MockEnv::new();
         let t0 = env.now();
         let mut conn = Connection::new(t0, ConnectionConfig::default());
 
@@ -642,7 +616,7 @@ mod tests {
 
     #[test]
     fn server_hello_unsupported_version() {
-        let env = TestEnv;
+        let env = MockEnv::new();
         let t0 = env.now();
         let mut conn = Connection::new(t0, ConnectionConfig::default());
         conn.set_session_id(12345);
@@ -661,7 +635,7 @@ mod tests {
 
     #[test]
     fn server_generates_session_id_from_environment() {
-        let env = TestEnv;
+        let env = MockEnv::new();
         let t0 = env.now();
         let mut conn = Connection::new(t0, ConnectionConfig::default());
 
@@ -695,7 +669,7 @@ mod tests {
 
     #[test]
     fn handle_hello_rejects_unsupported_version() {
-        let env = TestEnv;
+        let env = MockEnv::new();
         let t0 = env.now();
         let mut conn = Connection::new(t0, ConnectionConfig::default());
 
@@ -707,7 +681,7 @@ mod tests {
 
     #[test]
     fn handle_hello_rejects_if_not_init_state() {
-        let env = TestEnv;
+        let env = MockEnv::new();
         let t0 = env.now();
         let mut conn = Connection::new(t0, ConnectionConfig::default());
 
@@ -731,7 +705,7 @@ mod tests {
 
     #[test]
     fn handle_goodbye_authenticated() {
-        let env = TestEnv;
+        let env = MockEnv::new();
         let t0 = env.now();
         let mut conn = Connection::new(t0, ConnectionConfig::default());
 
@@ -760,7 +734,7 @@ mod tests {
 
     #[test]
     fn handle_goodbye_pending() {
-        let env = TestEnv;
+        let env = MockEnv::new();
         let t0 = env.now();
         let mut conn = Connection::new(t0, ConnectionConfig::default());
 
@@ -778,7 +752,7 @@ mod tests {
 
     #[test]
     fn handle_error_frame() {
-        let env = TestEnv;
+        let env = MockEnv::new();
         let t0 = env.now();
         let mut conn = Connection::new(t0, ConnectionConfig::default());
 
