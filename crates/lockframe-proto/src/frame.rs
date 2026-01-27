@@ -77,10 +77,6 @@ impl Frame {
     pub fn new(mut header: FrameHeader, payload: impl Into<Bytes>) -> Self {
         let payload = payload.into();
 
-        // INVARIANT: Payload length always fits in u32 because:
-        // 1. Bytes is bounded by isize::MAX (Rust allocation limit)
-        // 2. MAX_PAYLOAD_SIZE (16MB) << u32::MAX (4GB)
-        // 3. Even on 64-bit, practical allocations never approach u32::MAX
         #[allow(clippy::expect_used)]
         let payload_len = u32::try_from(payload.len()).expect(
             "invariant: payload length fits in u32 (bounded by isize::MAX and protocol limit)",

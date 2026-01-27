@@ -375,11 +375,7 @@ where
     }
 
     /// Handle a sync request from a client.
-    fn handle_sync_request(
-        &mut self,
-        session_id: u64,
-        frame: &Frame,
-    ) -> Vec<ServerAction<E::Instant>> {
+    fn handle_sync_request(&self, session_id: u64, frame: &Frame) -> Vec<ServerAction<E::Instant>> {
         let room_id = frame.header.room_id();
         let now = self.env.now();
 
@@ -454,7 +450,7 @@ where
 
     /// Handle `KeyPackage` publish request.
     fn handle_key_package_publish(
-        &mut self,
+        &self,
         session_id: u64,
         frame: &Frame,
     ) -> Vec<ServerAction<E::Instant>> {
@@ -568,7 +564,7 @@ where
 
     /// Handle `KeyPackage` fetch request.
     fn handle_key_package_fetch(
-        &mut self,
+        &self,
         session_id: u64,
         frame: &Frame,
     ) -> Vec<ServerAction<E::Instant>> {
@@ -679,7 +675,7 @@ where
     /// creation. The server creates the room in `RoomManager` and subscribes
     /// the creator.
     fn handle_group_info_publish(
-        &mut self,
+        &self,
         session_id: u64,
         frame: &Frame,
     ) -> Vec<ServerAction<E::Instant>> {
@@ -733,7 +729,7 @@ where
 
     /// Handle `GroupInfo` request (fetch `GroupInfo` for external joiners).
     fn handle_group_info_request(
-        &mut self,
+        &self,
         session_id: u64,
         frame: &Frame,
     ) -> Vec<ServerAction<E::Instant>> {

@@ -153,7 +153,9 @@ pub mod test_utils {
 
         fn now(&self) -> Instant {
             let nanos = self.offset_nanos.load(Ordering::SeqCst);
-            self.base + Duration::from_nanos(nanos)
+            let offset = Duration::from_nanos(nanos);
+
+            self.base.checked_add(offset).unwrap_or(self.base)
         }
 
         fn sleep(&self, _duration: Duration) -> impl std::future::Future<Output = ()> + Send {

@@ -52,9 +52,9 @@ impl QuinnTransport {
         cert_path: Option<String>,
         key_path: Option<String>,
     ) -> Result<Self, ServerError> {
-        let addr: SocketAddr = address.parse().map_err(|e| {
-            ServerError::Config(format!("invalid bind address '{address}': {e}"))
-        })?;
+        let addr: SocketAddr = address
+            .parse()
+            .map_err(|e| ServerError::Config(format!("invalid bind address '{address}': {e}")))?;
 
         let server_config = match (cert_path, key_path) {
             (Some(cert), Some(key)) => load_tls_config(&cert, &key)?,

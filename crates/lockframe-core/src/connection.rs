@@ -253,7 +253,7 @@ where
     /// Elapsed time since last activity, if timeout exceeded. `None` otherwise.
     #[must_use]
     pub fn check_timeout(&self, now: I) -> Option<Duration> {
-        let elapsed = now - self.last_activity;
+        let elapsed = now.sub(self.last_activity);
 
         let timeout = match self.state {
             ConnectionState::Pending => self.config.handshake_timeout,
@@ -288,7 +288,7 @@ where
             let should_send = match self.last_heartbeat {
                 None => true, // Never sent heartbeat
                 Some(last) => {
-                    let elapsed = now - last;
+                    let elapsed = now.sub(last);
                     elapsed >= self.config.heartbeat_interval
                 },
             };

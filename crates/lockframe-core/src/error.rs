@@ -3,8 +3,8 @@
 //! Strongly-typed errors for different layers: connection errors (handshake,
 //! timeout, state transitions) and transport errors (network failures).
 //!
-//! We avoid using `std::io::Error` for protocol logic to maintain type safety and
-//! enable proper error handling and recovery.
+//! We avoid using `std::io::Error` for protocol logic to maintain type safety
+//! and enable proper error handling and recovery.
 
 use std::{io, time::Duration};
 
@@ -76,14 +76,12 @@ impl ConnectionError {
     /// Protocol violations (invalid frames, unsupported versions) are never
     /// transient - they indicate a broken or malicious peer.
     pub fn is_transient(&self) -> bool {
-        matches!(
-            self,
-            Self::HandshakeTimeout { .. } | Self::IdleTimeout { .. }
-        )
+        matches!(self, Self::HandshakeTimeout { .. } | Self::IdleTimeout { .. })
     }
 }
 
-/// Convert `ConnectionError` to `io::Error` for compatibility with async I/O APIs.
+/// Convert `ConnectionError` to `io::Error` for compatibility with async I/O
+/// APIs.
 ///
 /// This is only for boundary conversion - internally we use `ConnectionError`.
 impl From<ConnectionError> for io::Error {
@@ -95,8 +93,8 @@ impl From<ConnectionError> for io::Error {
             ConnectionError::InvalidState { .. }
             | ConnectionError::UnexpectedFrame { .. }
             | ConnectionError::UnsupportedVersion(_)
+            | ConnectionError::Protocol(_)
             | ConnectionError::InvalidPayload { .. } => io::ErrorKind::InvalidData,
-            ConnectionError::Protocol(_) => io::ErrorKind::InvalidData,
             ConnectionError::Transport(_) => io::ErrorKind::Other,
         };
         Self::new(kind, err.to_string())

@@ -103,9 +103,12 @@ fn extract_member_id_from_credential(credential: &Credential) -> Result<MemberId
             bytes.len()
         )));
     }
-    let member_id_bytes: [u8; 8] = bytes[..8]
-        .try_into()
-        .map_err(|_| MlsError::Crypto("Failed to extract member_id bytes".to_string()))?;
+
+    let member_id_bytes = bytes
+        .get(..8)
+        .and_then(|b| b.try_into().ok())
+        .ok_or_else(|| MlsError::Serialization("Member ID too short".to_string()))?;
+
     Ok(u64::from_le_bytes(member_id_bytes))
 }
 
@@ -127,8 +130,8 @@ pub struct MlsGroup<E: Environment> {
     /// Our member ID in this group
     member_id: MemberId,
 
-    /// `OpenMLS` group instance (contains all MLS state)
-    mls_group: openmls::group::MlsGroup,
+    /// Inner `OpenMLS` group instance (contains all MLS state)
+    inner_group: openmls::group::MlsGroup,
 
     /// Our signature keypair for this group
     signer: SignatureKeyPair,
@@ -180,11 +183,13 @@ impl<E: Environment> MlsGroup<E> {
             .ciphersuite(ciphersuite)
             .use_ratchet_tree_extension(true)
             .build();
-        let mls_group =
+
+        let inner_group =
             openmls::group::MlsGroup::new(&provider, &signer, &group_config, credential_with_key)
                 .map_err(|e| MlsError::Crypto(format!("Failed to create MLS group: {e}")))?;
 
-        let group = Self { room_id, member_id, mls_group, signer, provider, pending_commit: None };
+        let group =
+            Self { room_id, member_id, inner_group, signer, provider, pending_commit: None };
 
         // Export GroupInfo so external joiners can join immediately
         let group_info_bytes = group.export_group_info()?;
@@ -201,7 +206,7 @@ impl<E: Environment> MlsGroup<E> {
 
     /// MLS epoch number (increments on Commit).
     pub fn epoch(&self) -> u64 {
-        self.mls_group.epoch().as_u64()
+        self.inner_group.epoch().as_u64()
     }
 
     /// Our member identifier in this group.
@@ -216,12 +221,12 @@ impl<E: Environment> MlsGroup<E> {
 
     /// MLS group identifier (cryptographic binding).
     pub fn group_id(&self) -> &GroupId {
-        self.mls_group.group_id()
+        self.inner_group.group_id()
     }
 
     /// Our position in the ratchet tree.
     pub fn own_leaf_index(&self) -> u32 {
-        self.mls_group.own_leaf_index().u32()
+        self.inner_group.own_leaf_index().u32()
     }
 
     /// Sign a frame header using this group's MLS signature key.
@@ -245,7 +250,7 @@ impl<E: Environment> MlsGroup<E> {
 
     /// All member positions in the ratchet tree (for sender key derivation).
     pub fn member_leaf_indices(&self) -> Vec<u32> {
-        self.mls_group.members().map(|m| m.index.u32()).collect()
+        self.inner_group.members().map(|m| m.index.u32()).collect()
     }
 
     /// Member ID at given leaf index. `None` if position is empty.
@@ -253,7 +258,7 @@ impl<E: Environment> MlsGroup<E> {
     /// Used to bind `sender_id` (frame header) to `sender_index` (encrypted
     /// payload).
     pub fn member_id_by_leaf_index(&self, leaf_index: u32) -> Option<MemberId> {
-        self.mls_group.members().find_map(|m| {
+        self.inner_group.members().find_map(|m| {
             if m.index.u32() == leaf_index {
                 extract_member_id_from_credential(&m.credential).ok()
             } else {
@@ -269,7 +274,7 @@ impl<E: Environment> MlsGroup<E> {
         context: &[u8],
         length: usize,
     ) -> Result<Vec<u8>, MlsError> {
-        self.mls_group
+        self.inner_group
             .export_secret(self.provider.crypto(), label, context, length)
             .map_err(|e| MlsError::Crypto(format!("Failed to export secret: {e}")))
     }
@@ -281,7 +286,18 @@ impl<E: Environment> MlsGroup<E> {
 
     /// Pending commit has exceeded timeout duration.
     pub fn is_commit_timeout(&self, now: E::Instant, timeout: Duration) -> bool {
-        self.pending_commit.as_ref().is_some_and(|pending| now - pending.sent_at >= timeout)
+        self.pending_commit.as_ref().is_some_and(|pending| {
+            if now >= pending.sent_at {
+                #[allow(
+                    clippy::arithmetic_side_effects,
+                    reason = "`now >= sent_at` guard prevents underflow"
+                )]
+                let elapsed = now - pending.sent_at;
+                elapsed >= timeout
+            } else {
+                false
+            }
+        })
     }
 
     /// Clear a pending commit without merging it.
@@ -293,7 +309,7 @@ impl<E: Environment> MlsGroup<E> {
     /// Also clear `OpenMLS` pending commit to avoid stale state.
     pub fn clear_pending_commit(&mut self) {
         self.pending_commit = None;
-        let _ = self.mls_group.clear_pending_commit(self.provider.storage()); // best-effort cleanup
+        let _ = self.inner_group.clear_pending_commit(self.provider.storage()); // best-effort cleanup
     }
 
     /// Merge the pending commit after it has been confirmed by the sequencer.
@@ -307,7 +323,7 @@ impl<E: Environment> MlsGroup<E> {
             .map(|p| p.target_epoch)
             .ok_or_else(|| MlsError::Crypto("No pending commit to merge".to_string()))?;
 
-        self.mls_group
+        self.inner_group
             .merge_pending_commit(&self.provider)
             .map_err(|e| MlsError::Crypto(format!("Failed to merge pending commit: {e}")))?;
 
@@ -330,7 +346,7 @@ impl<E: Environment> MlsGroup<E> {
 
     /// Check if the `OpenMLS` group has a pending commit.
     pub fn has_mls_pending_commit(&self) -> bool {
-        self.mls_group.pending_commit().is_some()
+        self.inner_group.pending_commit().is_some()
     }
 
     /// Validate a frame against this group's MLS state
@@ -343,11 +359,10 @@ impl<E: Environment> MlsGroup<E> {
         frame: &Frame,
         mls_state: Option<&MlsGroupState>,
     ) -> Result<(), MlsError> {
-        let validation_result = if let Some(state) = mls_state {
-            MlsValidator::validate_frame(frame, self.epoch(), state)?
-        } else {
-            MlsValidator::validate_frame_no_state(frame)?
-        };
+        let validation_result = mls_state.map_or_else(
+            || MlsValidator::validate_frame_no_state(frame),
+            |state| MlsValidator::validate_frame(frame, self.epoch(), state),
+        );
 
         match validation_result {
             ValidationResult::Accept => Ok(()),
@@ -359,18 +374,17 @@ impl<E: Environment> MlsGroup<E> {
     ///
     /// Processes an MLS protocol message, updates the group state, and returns
     /// any actions that need to be taken as a result.
-    pub fn process_message(&mut self, frame: Frame) -> Result<Vec<MlsAction>, MlsError> {
-        let mls_message =
-            MlsMessageIn::tls_deserialize_exact(frame.payload.as_ref()).map_err(|e| {
-                MlsError::Serialization(format!("Failed to deserialize MLS message: {e}"))
-            })?;
+    pub fn process_message(&mut self, frame: &Frame) -> Result<Vec<MlsAction>, MlsError> {
+        let mls_message = MlsMessageIn::tls_deserialize_exact(&frame.payload).map_err(|e| {
+            MlsError::Serialization(format!("Failed to deserialize MLS message: {e}"))
+        })?;
 
         let protocol_message: ProtocolMessage = mls_message
             .try_into()
             .map_err(|e| MlsError::Serialization(format!("Invalid MLS message type: {e:?}")))?;
 
         let processed = self
-            .mls_group
+            .inner_group
             .process_message(&self.provider, protocol_message)
             .map_err(|e| MlsError::Crypto(format!("Failed to process message: {e}")))?;
 
@@ -402,7 +416,7 @@ impl<E: Environment> MlsGroup<E> {
             ProcessedMessageContent::StagedCommitMessage(staged_commit) => {
                 let old_epoch = self.epoch();
 
-                self.mls_group
+                self.inner_group
                     .merge_staged_commit(&self.provider, *staged_commit)
                     .map_err(|e| MlsError::Crypto(format!("Failed to merge commit: {e}")))?;
 
@@ -413,7 +427,7 @@ impl<E: Environment> MlsGroup<E> {
                     message: format!("Advanced to epoch {}", self.epoch()),
                 });
 
-                if self.mls_group.is_active() {
+                if self.inner_group.is_active() {
                     let group_info_bytes = self.export_group_info()?;
                     actions.push(MlsAction::PublishGroupInfo {
                         room_id: self.room_id,
@@ -437,7 +451,7 @@ impl<E: Environment> MlsGroup<E> {
     /// and returns a frame ready to send to the sequencer.
     pub fn create_message(&mut self, plaintext: &[u8]) -> Result<Vec<MlsAction>, MlsError> {
         let mls_message = self
-            .mls_group
+            .inner_group
             .create_message(&self.provider, &self.signer, plaintext)
             .map_err(|e| MlsError::Crypto(format!("Failed to create message: {e}")))?;
 
@@ -473,7 +487,7 @@ impl<E: Environment> MlsGroup<E> {
             })
             .collect::<Result<Vec<_>, MlsError>>()?;
 
-        self.add_members(key_packages)
+        self.add_members(&key_packages)
     }
 
     /// Export the current group state for storage.
@@ -511,24 +525,24 @@ impl<E: Environment> MlsGroup<E> {
         let mut members = Vec::new();
         let mut member_keys = HashMap::new();
 
-        for member in self.mls_group.members() {
+        for member in self.inner_group.members() {
             let identity = member.credential.serialized_content();
             if identity.len() >= 8 {
-                if let Ok(id_bytes) = identity[..8].try_into() {
+                if let Some(id_bytes) = identity.get(..8).and_then(|b| b.try_into().ok()) {
                     let member_id = u64::from_le_bytes(id_bytes);
                     members.push(member_id);
 
-                    if member.signature_key.len() == 32 {
-                        if let Ok(key_bytes) = member.signature_key.as_slice().try_into() {
-                            member_keys.insert(member_id, key_bytes);
-                        }
+                    if let Some(key_bytes) =
+                        member.signature_key.get(..32).and_then(|b| b.try_into().ok())
+                    {
+                        member_keys.insert(member_id, key_bytes);
                     }
                 }
             }
         }
 
         let tree_hash: [u8; 32] = self
-            .mls_group
+            .inner_group
             .export_group_context()
             .tree_hash()
             .try_into()
@@ -550,7 +564,7 @@ impl<E: Environment> MlsGroup<E> {
     /// external joiners have current state.
     pub fn export_group_info(&self) -> Result<Vec<u8>, MlsError> {
         let group_info = self
-            .mls_group
+            .inner_group
             .export_group_info(self.provider.crypto(), &self.signer, true)
             .map_err(|e| MlsError::Crypto(format!("Failed to export GroupInfo: {e}")))?;
 
@@ -614,17 +628,16 @@ impl<E: Environment> MlsGroup<E> {
     pub fn join_from_welcome(
         room_id: RoomId,
         member_id: MemberId,
-        welcome_bytes: &[u8],
+        mut welcome_bytes: &[u8],
         pending_state: PendingJoinState<E>,
     ) -> Result<(Self, Vec<MlsAction>), MlsError> {
         let PendingJoinState { provider, signer } = pending_state;
 
-        let mls_message = MlsMessageIn::tls_deserialize(&mut welcome_bytes.as_ref())
+        let mls_message = MlsMessageIn::tls_deserialize(&mut welcome_bytes)
             .map_err(|e| MlsError::Serialization(format!("Failed to deserialize Welcome: {e}")))?;
 
-        let welcome = match mls_message.extract() {
-            MlsMessageBodyIn::Welcome(w) => w,
-            _ => return Err(MlsError::Serialization("Message is not a Welcome".to_string())),
+        let MlsMessageBodyIn::Welcome(welcome) = mls_message.extract() else {
+            return Err(MlsError::Serialization("Message is not a Welcome".to_string()));
         };
 
         let group_config = MlsGroupJoinConfig::builder().use_ratchet_tree_extension(true).build();
@@ -635,7 +648,14 @@ impl<E: Environment> MlsGroup<E> {
             .map_err(|e| MlsError::Crypto(format!("Failed to join group from Welcome: {e}")))?;
 
         let epoch = mls_group.epoch().as_u64();
-        let group = Self { room_id, member_id, mls_group, signer, provider, pending_commit: None };
+        let group = Self {
+            room_id,
+            member_id,
+            inner_group: mls_group,
+            signer,
+            provider,
+            pending_commit: None,
+        };
 
         let actions = vec![MlsAction::Log {
             message: format!(
@@ -662,7 +682,7 @@ impl<E: Environment> MlsGroup<E> {
         env: E,
         room_id: RoomId,
         member_id: MemberId,
-        group_info_bytes: &[u8],
+        mut group_info_bytes: &[u8],
     ) -> Result<(Self, Vec<MlsAction>), MlsError> {
         let provider = MlsProvider::new(env);
         let ciphersuite = Ciphersuite::MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519;
@@ -676,10 +696,9 @@ impl<E: Environment> MlsGroup<E> {
             signature_key: signer.public().into(),
         };
 
-        let mls_message_in = MlsMessageIn::tls_deserialize(&mut group_info_bytes.as_ref())
-            .map_err(|e| {
-                MlsError::Serialization(format!("Failed to deserialize GroupInfo message: {e}"))
-            })?;
+        let mls_message_in = MlsMessageIn::tls_deserialize(&mut group_info_bytes).map_err(|e| {
+            MlsError::Serialization(format!("Failed to deserialize GroupInfo message: {e}"))
+        })?;
 
         let verifiable_group_info = mls_message_in
             .into_verifiable_group_info()
@@ -707,7 +726,14 @@ impl<E: Environment> MlsGroup<E> {
         commit_header.set_sender_id(member_id);
 
         let commit_frame = Frame::new(commit_header, commit_payload);
-        let group = Self { room_id, member_id, mls_group, signer, provider, pending_commit: None };
+        let group = Self {
+            room_id,
+            member_id,
+            inner_group: mls_group,
+            signer,
+            provider,
+            pending_commit: None,
+        };
         let group_info_bytes = group.export_group_info()?;
 
         let actions = vec![
@@ -728,13 +754,16 @@ impl<E: Environment> MlsGroup<E> {
     /// Creates a commit that adds the specified members to the group. The
     /// commit must be sent to the sequencer and will advance the epoch when
     /// accepted.
-    fn add_members(&mut self, key_packages: Vec<KeyPackage>) -> Result<Vec<MlsAction>, MlsError> {
-        let target_epoch = self.epoch() + 1;
+    fn add_members(&mut self, key_packages: &[KeyPackage]) -> Result<Vec<MlsAction>, MlsError> {
+        let target_epoch = self
+            .epoch()
+            .checked_add(1)
+            .ok_or_else(|| MlsError::Crypto("Epoch overflow".to_string()))?;
         let now = self.provider.now();
 
         let (mls_message_out, welcome, group_info) = self
-            .mls_group
-            .add_members(&self.provider, &self.signer, &key_packages)
+            .inner_group
+            .add_members(&self.provider, &self.signer, key_packages)
             .map_err(|e| MlsError::Crypto(format!("Failed to add members: {e}")))?;
 
         self.pending_commit = Some(PendingCommit { target_epoch, sent_at: now });
@@ -766,7 +795,7 @@ impl<E: Environment> MlsGroup<E> {
             .tls_serialize_detached()
             .map_err(|e| MlsError::Serialization(format!("Failed to serialize welcome: {e}")))?;
 
-        for kp in &key_packages {
+        for kp in key_packages {
             let recipient = extract_member_id_from_credential(kp.leaf_node().credential())?;
             let mut header = FrameHeader::new(Opcode::Welcome);
             header.set_recipient_id(recipient);
@@ -799,13 +828,16 @@ impl<E: Environment> MlsGroup<E> {
             ));
         }
 
-        let target_epoch = self.epoch() + 1;
+        let target_epoch = self
+            .epoch()
+            .checked_add(1)
+            .ok_or_else(|| MlsError::Crypto("Epoch overflow".to_string()))?;
         let now = self.provider.now();
 
         let leaf_indices = self.member_ids_to_leaf_indices(member_ids)?;
 
         let (mls_message_out, _welcome_option, group_info) = self
-            .mls_group
+            .inner_group
             .remove_members(&self.provider, &self.signer, &leaf_indices)
             .map_err(|e| MlsError::Crypto(format!("Failed to remove members: {e}")))?;
 
@@ -852,7 +884,7 @@ impl<E: Environment> MlsGroup<E> {
     /// member must commit the removal.
     pub fn leave_group(&mut self) -> Result<Vec<MlsAction>, MlsError> {
         let mls_message_out = self
-            .mls_group
+            .inner_group
             .leave_group(&self.provider, &self.signer)
             .map_err(|e| MlsError::Crypto(format!("Failed to create leave proposal: {e}")))?;
 
@@ -888,12 +920,12 @@ impl<E: Environment> MlsGroup<E> {
 
         for &target_id in member_ids {
             let leaf_index = self
-                .mls_group
+                .inner_group
                 .members()
                 .find_map(|m| {
                     let identity = m.credential.serialized_content();
                     if identity.len() >= 8 {
-                        let member_id = u64::from_le_bytes(identity[..8].try_into().ok()?);
+                        let member_id = u64::from_le_bytes(identity.get(..8)?.try_into().ok()?);
                         if member_id == target_id {
                             return Some(m.index);
                         }
@@ -1017,7 +1049,7 @@ mod tests {
 
         // Bob processes the message
         let bob_receive_actions =
-            bob_group.process_message(message_frame).expect("bob process message");
+            bob_group.process_message(&message_frame).expect("bob process message");
 
         // ORACLE: DeliverMessage should have sender = alice_id (42), not 0
         let delivered = bob_receive_actions
@@ -1098,7 +1130,7 @@ mod tests {
 
         // Verify Bob is now a member
         let members: Vec<u64> = alice_group
-            .mls_group
+            .inner_group
             .members()
             .filter_map(|m| {
                 let identity = m.credential.serialized_content();

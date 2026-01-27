@@ -307,7 +307,7 @@ impl<E: Environment> Client<E> {
 
                 let mls_actions = room
                     .mls_group
-                    .process_message(frame)
+                    .process_message(&frame)
                     .map_err(|e| ClientError::Mls { reason: e.to_string() })?;
 
                 Ok(self.convert_mls_actions(room_id, mls_actions))
@@ -423,7 +423,7 @@ impl<E: Environment> Client<E> {
                 // before the original send operation consumed the pending commit.
                 let mls_actions = room
                     .mls_group
-                    .process_message(frame)
+                    .process_message(&frame)
                     .map_err(|e| ClientError::Mls { reason: e.to_string() })?;
 
                 self.convert_mls_actions(room_id, mls_actions)
