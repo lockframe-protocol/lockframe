@@ -22,7 +22,7 @@
 //!
 //! - [`connection`]: Connection state machine (handshake, heartbeat, timeout)
 //! - [`mls`]: MLS group state machine (proposals, commits, messages)
-//! - [`env`]: Environment abstraction (time, RNG)
+//! - [`mod@env`]: Environment abstraction (time, RNG)
 //! - [`transport`]: Transport abstraction (streams)
 //! - [`error`]: Connection error types
 

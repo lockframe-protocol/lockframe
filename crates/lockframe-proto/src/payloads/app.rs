@@ -31,7 +31,7 @@ pub struct EncryptedMessage {
     pub generation: u32,
 
     /// Nonce for XChaCha20 (24 bytes).
-    /// Structure: [epoch:8][sender_index:4][generation:4][random:8]
+    /// Structure: `[epoch:8][sender_index:4][generation:4][random:8]`
     pub nonce: [u8; 24],
 
     /// Ciphertext including 16-byte Poly1305 authentication tag.

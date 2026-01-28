@@ -2,7 +2,7 @@
 //!
 //! Provides [`ConnectedClient`] which handles QUIC I/O for frame transport.
 //! This is a thin layer that just sends/receives frames - protocol logic
-//! remains in the Sans-IO [`Client`].
+//! remains in the Sans-IO [`crate::Client`].
 //!
 //! # TLS Modes
 //!

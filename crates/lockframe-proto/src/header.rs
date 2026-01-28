@@ -220,7 +220,7 @@ impl FrameHeader {
     /// Monotonic sequence number within this room's log.
     ///
     /// Only meaningful for sequenced opcodes (AppMessage, Commit, Proposal).
-    /// For Welcome frames, use [`recipient_id()`] instead.
+    /// For Welcome frames, use [`Self::recipient_id()`] instead.
     #[must_use]
     pub fn log_index(&self) -> u64 {
         debug_assert!(
@@ -233,7 +233,7 @@ impl FrameHeader {
     /// Target member for Welcome routing.
     ///
     /// Only meaningful for Welcome frames. For sequenced frames, use
-    /// [`log_index()`] instead.
+    /// [`Self::log_index()`] instead.
     #[must_use]
     pub fn recipient_id(&self) -> u64 {
         debug_assert!(
@@ -287,7 +287,7 @@ impl FrameHeader {
     /// Assign log index (sequencer use only).
     ///
     /// Only valid for sequenced opcodes. For Welcome, use
-    /// [`set_recipient_id()`].
+    /// [`Self::set_recipient_id()`].
     pub fn set_log_index(&mut self, log_index: u64) {
         debug_assert!(
             self.opcode_enum() != Some(Opcode::Welcome),
@@ -298,7 +298,8 @@ impl FrameHeader {
 
     /// Set routing target for Welcome frames.
     ///
-    /// Only valid for Welcome. For sequenced frames, use [`set_log_index()`].
+    /// Only valid for Welcome. For sequenced frames, use
+    /// [`Self::set_log_index()`].
     pub fn set_recipient_id(&mut self, recipient_id: u64) {
         debug_assert!(
             self.opcode_enum() == Some(Opcode::Welcome),
@@ -317,7 +318,7 @@ impl FrameHeader {
         self.epoch = epoch.to_be_bytes();
     }
 
-    /// Set Ed25519 signature (computed over [`signing_data()`]).
+    /// Set Ed25519 signature (computed over [`Self::signing_data()`]).
     pub fn set_signature(&mut self, signature: [u8; 64]) {
         self.signature = signature;
     }

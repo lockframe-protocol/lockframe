@@ -9,7 +9,8 @@ const SENDER_KEY_LABEL: &[u8] = b"lockframeSenderV1";
 /// Derive a sender key seed from the MLS epoch secret.
 ///
 /// This produces a 32-byte seed that is unique per (epoch, `sender_index`)
-/// pair. The seed is used to initialize a [`SymmetricRatchet`] for that sender.
+/// pair. The seed is used to initialize a [`crate::SymmetricRatchet`] for that
+/// sender.
 ///
 /// # Security
 ///
