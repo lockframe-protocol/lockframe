@@ -17,9 +17,6 @@
 //! - [`QuinnTransport`]: QUIC transport via Quinn library
 //! - [`SystemEnv`]: Production environment (real time, crypto RNG)
 
-#![forbid(unsafe_code)]
-#![warn(missing_docs)]
-
 mod driver;
 mod error;
 mod key_package_registry;

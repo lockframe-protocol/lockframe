@@ -3,9 +3,6 @@
 //! A thin shell over [`lockframe_app::Driver`] that provides terminal-specific
 //! I/O. All orchestration logic lives in the generic [`lockframe_app::Runtime`]
 
-#![forbid(unsafe_code)]
-#![deny(missing_docs)]
-
 pub mod commands;
 pub mod input;
 pub mod terminal;

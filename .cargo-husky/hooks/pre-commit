@@ -19,7 +19,7 @@ cargo fmt --all --check || {
 
 # Run clippy
 echo "Running clippy..."
-cargo clippy --all-targets --all-features -- -D warnings || {
+cargo clippy --workspace --all-targets --all-features || {
     echo "FAILURE: Clippy found issues. Fix them before committing."
     exit 1
 }
@@ -37,5 +37,13 @@ echo "Running fuzz target checks..."
     echo "FAILURE: Cargo check failed. Fix them before committing."
     exit 1
 }
+
+# Run cargo doc check
+echo "Running documentation check..."
+cargo doc --workspace --all-features --no-deps || {
+    echo "FAILURE: Documentation check failed. Fix them before committing."
+    exit 1
+}
+
 
 echo "SUCCESS: All pre-commit checks passed!"

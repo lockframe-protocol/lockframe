@@ -11,9 +11,6 @@
 //! - [`Driver`]: Trait for platform-specific I/O abstraction
 //! - [`Runtime`]: Generic orchestration loop using Driver
 
-#![forbid(unsafe_code)]
-#![deny(missing_docs)]
-
 mod action;
 mod app;
 mod bridge;

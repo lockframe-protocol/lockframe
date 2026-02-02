@@ -16,8 +16,8 @@
 //! specific scenarios. Use [`InvariantRegistry::standard()`] for common
 //! App/Bridge invariants.
 
-#![forbid(unsafe_code)]
-#![warn(missing_docs)]
+#![allow(clippy::print_stdout, clippy::print_stderr, clippy::dbg_macro)]
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 pub mod cluster;
 pub mod invariants;

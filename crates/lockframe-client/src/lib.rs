@@ -26,9 +26,6 @@
 //! - [`transport::TlsMode`]: Secure or insecure TLS verification
 //! - [`transport::TransportConfig`]: Transport configuration options
 
-#![forbid(unsafe_code)]
-#![deny(missing_docs)]
-
 mod client;
 mod error;
 mod event;

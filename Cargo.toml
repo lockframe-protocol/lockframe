@@ -7,49 +7,59 @@ resolver = "2"
 version = "0.1.0"
 edition = "2024"
 license = "Apache-2.0"
-rust-version = "1.90"
+rust-version = "1.93"
 
 [workspace.lints.rust]
-unsafe_code = "forbid"
-missing_docs = "warn"
+unsafe_code = "deny"
+missing_docs = "deny"
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(fuzzing)'] }
+warnings = "deny"
 
 [workspace.lints.clippy]
-all = { level = "warn", priority = -1 }
+# Default to strict linting; individual lints opt out explicitly
+all = { level = "deny", priority = -1 }
 pedantic = { level = "warn", priority = -1 }
-nursery = { level = "warn", priority = -1 }
-cargo = { level = "warn", priority = -1 }
 
+# Use invariant assertions
+as_conversions = "allow"
+arithmetic_side_effects = "allow"
+cast_possible_truncation = "allow"
+cast_possible_wrap = "allow"
+cast_precision_loss = "allow"
+cast_sign_loss = "allow"
+
+# Noise-heavy or stylistic lints
 module_name_repetitions = "allow"
 must_use_candidate = "allow"
+unused_self = "allow"
 missing_errors_doc = "allow"
 missing_panics_doc = "allow"
-
-cargo_common_metadata = "allow"
 multiple_crate_versions = "allow"
+cargo_common_metadata = "allow"
 
-missing_const_for_fn = "allow"
-missing_enforced_import_renames = "allow"
-doc_markdown = "warn"
-disallowed_macros = "allow"
-
+# Footguns
 unwrap_used = "deny"
 expect_used = "deny"
 panic = "deny"
-unimplemented = "deny"
+wildcard_imports = "deny"
 todo = "deny"
-dbg_macro = "deny"
+unimplemented = "deny"
+
+# Prevent async std::sync::Mutex deadlocks
+await_holding_lock = "deny"
+
+# clippy.toml
+disallowed_methods = "deny"
+disallowed_macros = "deny"
 print_stdout = "deny"
 print_stderr = "deny"
-
-inefficient_to_string = "deny"
-unnecessary_self_imports = "deny"
-unused_async = "deny"
+dbg_macro = "deny"
 
 [profile.dev]
 opt-level = 0
 debug = true
 incremental = true
+overflow-checks = true
 
 [profile.dev.package."*"]
 opt-level = 3
@@ -57,6 +67,7 @@ opt-level = 3
 [profile.test]
 opt-level = 0
 debug = true
+overflow-checks = true
 
 [profile.release]
 opt-level = 3
@@ -65,9 +76,11 @@ debug = false
 strip = true
 codegen-units = 1
 panic = "abort"
+overflow-checks = true
 
 [profile.bench]
 inherits = "release"
+debug = true
 
 [package]
 name = "lockframe-workspace"
@@ -76,6 +89,7 @@ edition = "2024"
 publish = false
 
 [dependencies]
+# TODO: use workspace-wide dependencies instead
 
 [dev-dependencies]
 cargo-husky = { version = "1.5", default-features = false, features = ["user-hooks"] }

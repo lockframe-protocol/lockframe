@@ -51,9 +51,6 @@
 //! - New epoch secret -> all sender keys re-derived from scratch
 //! - Previous compromise doesn't affect new epoch's messages
 
-#![forbid(unsafe_code)]
-#![deny(missing_docs)]
-
 pub mod sender_keys;
 
 pub use sender_keys::{

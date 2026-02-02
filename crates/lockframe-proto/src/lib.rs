@@ -14,8 +14,6 @@
 //! All parsing uses compile-time verified layouts via `zerocopy`. We enforce a
 //! 16 MB payload limit to prevent memory exhaustion attacks. No "fast paths"
 //! that skip validation.
-#![forbid(unsafe_code)]
-#![warn(missing_docs)]
 
 pub mod errors;
 pub mod flags;

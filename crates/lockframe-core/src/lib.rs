@@ -26,9 +26,6 @@
 //! - [`transport`]: Transport abstraction (streams)
 //! - [`error`]: Connection error types
 
-#![forbid(unsafe_code)]
-#![deny(missing_docs)]
-
 pub mod connection;
 pub mod env;
 pub mod error;
