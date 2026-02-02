@@ -9,10 +9,10 @@ use serde::{Deserialize, Serialize};
 ///
 /// Primary message type for user-to-user communication. Messages are encrypted
 /// with XChaCha20-Poly1305 using sender keys derived from the MLS epoch secret.
-/// The nonce is deterministically derived from (epoch, sender_index,
+/// The nonce is deterministically derived from (epoch, `sender_index`,
 /// generation) plus a random suffix to prevent reuse.
 ///
-/// The epoch, sender_index, and generation fields let the receiver derive the
+/// The epoch, `sender_index`, and generation fields let the receiver derive the
 /// correct decryption key from their sender key ratchet state. These duplicate
 /// some header fields but are included in the CBOR payload for authenticated
 /// binding.
@@ -30,7 +30,7 @@ pub struct EncryptedMessage {
     /// Receivers advance their ratchet to this generation before decrypting.
     pub generation: u32,
 
-    /// Nonce for XChaCha20 (24 bytes).
+    /// Nonce for `XChaCha20` (24 bytes).
     /// Structure: `[epoch:8][sender_index:4][generation:4][random:8]`
     pub nonce: [u8; 24],
 
@@ -64,7 +64,7 @@ pub struct PushKey {
     /// Recipient device ID
     pub recipient_id: u64,
 
-    /// Encrypted message key (80 bytes: ephemeral_pk + encrypted_key + tag)
+    /// Encrypted message key (80 bytes: `ephemeral_pk` + `encrypted_key` + tag)
     pub encrypted_key: Vec<u8>,
 }
 

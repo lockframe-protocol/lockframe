@@ -1,6 +1,6 @@
 //! Simulation driver implementing the Driver trait.
 //!
-//! SimDriver provides the same interface as TerminalDriver but for
+//! `SimDriver` provides the same interface as `TerminalDriver` but for
 //! deterministic testing. It implements [`Driver`] so the same
 //! [`lockframe_app::Runtime`] orchestration code runs in both production and
 //! simulation.
@@ -65,7 +65,7 @@ impl SimDriver {
         self
     }
 
-    /// Inject an AppEvent for processing.
+    /// Inject an `AppEvent` for processing.
     pub fn inject_event(&self, event: AppEvent) {
         let mut state = self.state.lock().unwrap();
         state.pending_events.push_back(event);

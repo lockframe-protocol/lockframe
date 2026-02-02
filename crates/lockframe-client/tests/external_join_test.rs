@@ -15,10 +15,10 @@ use turmoil::Builder;
 const ROOM_ID: RoomId = 0x1234_5678_9abc_def0_1234_5678_9abc_def0;
 
 /// WHY THIS TEST IS NEEDED:
-/// External join must gracefully handle malformed GroupInfo:
+/// External join must gracefully handle malformed `GroupInfo`:
 /// - Truncated data, invalid TLS encoding, wrong group parameters
 /// - Without this test, attackers could crash clients with garbage data
-/// - DST won't generate invalid GroupInfo, so this needs explicit testing
+/// - DST won't generate invalid `GroupInfo`, so this needs explicit testing
 #[test]
 fn external_join_rejects_invalid_group_info() {
     let mut sim = Builder::new().build();
@@ -76,8 +76,8 @@ fn client_external_join_existing_room_fails() {
 
 /// WHY THIS TEST IS NEEDED:
 /// Verifies the Client correctly initiates external join by:
-/// 1. Accepting ExternalJoin event for unknown room
-/// 2. Generating GroupInfoRequest frame
+/// 1. Accepting `ExternalJoin` event for unknown room
+/// 2. Generating `GroupInfoRequest` frame
 /// 3. Tracking pending join state
 ///
 /// This tests the initiation step only - the full flow is in DST.
@@ -117,9 +117,9 @@ fn client_external_join_requests_group_info() {
 }
 
 /// WHY THIS TEST IS NEEDED:
-/// Verifies GroupInfo response handling produces correct outputs:
-/// - ExternalCommit frame (Opcode::Commit with external commit flag)
-/// - RoomJoined action for the app layer
+/// Verifies `GroupInfo` response handling produces correct outputs:
+/// - `ExternalCommit` frame (`Opcode::Commit` with external commit flag)
+/// - `RoomJoined` action for the app layer
 ///
 /// This is the critical state transition from "pending join" to "joined".
 #[test]
@@ -208,8 +208,8 @@ fn external_join_is_deterministic() {
 }
 
 /// WHY THIS TEST IS NEEDED:
-/// Verifies MlsGroup::join_from_external produces valid MLS state:
-/// - Correct room_id and member_id
+/// Verifies `MlsGroup::join_from_external` produces valid MLS state:
+/// - Correct `room_id` and `member_id`
 /// - Epoch advanced to 1 (external commit advances epoch)
 /// - Actions include commit frame
 ///

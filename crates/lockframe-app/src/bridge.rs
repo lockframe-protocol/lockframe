@@ -137,12 +137,11 @@ impl<E: Environment> Bridge<E> {
                 },
                 ClientAction::RequestSync { from_epoch, .. } => {
                     let payload = SyncRequest { from_log_index: from_epoch, limit: 100 };
-                    Payload::SyncRequest(payload)
+                    if let Ok(frame) = Payload::SyncRequest(payload)
                         .into_frame(FrameHeader::new(Opcode::SyncRequest))
-                        .ok()
-                        .map(|frame| {
-                            self.outgoing.push(frame);
-                        });
+                    {
+                        self.outgoing.push(frame);
+                    }
                 },
                 ClientAction::Log { .. } => {},
                 ClientAction::MemberAdded { room_id, user_id } => {
@@ -151,10 +150,9 @@ impl<E: Environment> Bridge<E> {
                 ClientAction::KeyPackagePublished => {},
                 ClientAction::KeyPackageNeeded { reason } => {
                     tracing::warn!(%reason, "KeyPackage needed, auto-republishing");
-                    self.client
-                        .handle(ClientEvent::PublishKeyPackage)
-                        .ok()
-                        .map(|actions| events.extend(self.process_client_actions(actions)));
+                    if let Ok(actions) = self.client.handle(ClientEvent::PublishKeyPackage) {
+                        events.extend(self.process_client_actions(actions));
+                    }
                 },
                 ClientAction::RoomJoined { room_id, .. } => {
                     events.push(AppEvent::RoomJoined { room_id });

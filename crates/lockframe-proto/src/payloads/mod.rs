@@ -78,13 +78,13 @@ pub enum Payload {
     Commit(mls::CommitData),
     /// MLS welcome message
     Welcome(mls::WelcomeData),
-    /// Publish KeyPackage to server registry
+    /// Publish `KeyPackage` to server registry
     KeyPackagePublish(mls::KeyPackagePublishRequest),
-    /// Fetch KeyPackage from server registry
+    /// Fetch `KeyPackage` from server registry
     KeyPackageFetch(mls::KeyPackageFetchPayload),
-    /// Request GroupInfo for external join
+    /// Request `GroupInfo` for external join
     GroupInfoRequest(mls::GroupInfoRequest),
-    /// GroupInfo response for external join
+    /// `GroupInfo` response for external join
     GroupInfo(mls::GroupInfoPayload),
 
     // Application Messages
@@ -133,7 +133,7 @@ impl ErrorPayload {
     pub const MLS_ERROR: u16 = 0x0005;
     /// Sequencer error (e.g., duplicate log index).
     pub const SEQUENCER_ERROR: u16 = 0x0006;
-    /// KeyPackage not found in registry.
+    /// `KeyPackage` not found in registry.
     pub const KEYPACKAGE_NOT_FOUND: u16 = 0x0007;
 
     /// Create a frame rejection error.
@@ -145,7 +145,7 @@ impl ErrorPayload {
     pub fn room_not_found(room_id: u128) -> Self {
         Self {
             code: Self::ROOM_NOT_FOUND,
-            message: format!("room not found: {:032x}", room_id),
+            message: format!("room not found: {room_id:032x}"),
             retry_after: None,
         }
     }
@@ -170,11 +170,11 @@ impl ErrorPayload {
         Self { code: Self::SEQUENCER_ERROR, message: msg.into(), retry_after: None }
     }
 
-    /// Create a KeyPackage not found error.
+    /// Create a `KeyPackage` not found error.
     pub fn keypackage_not_found(user_id: u64) -> Self {
         Self {
             code: Self::KEYPACKAGE_NOT_FOUND,
-            message: format!("no KeyPackage for user {}", user_id),
+            message: format!("no KeyPackage for user {user_id}"),
             retry_after: None,
         }
     }
@@ -274,8 +274,8 @@ impl Payload {
     ///
     /// # Errors
     ///
-    /// - `ProtocolError::PayloadTooLarge` if bytes exceed MAX_PAYLOAD_SIZE (16
-    ///   MB)
+    /// - `ProtocolError::PayloadTooLarge` if bytes exceed `MAX_PAYLOAD_SIZE`
+    ///   (16 MB)
     /// - `ProtocolError::CborDecode` if CBOR deserialization fails
     /// - `ProtocolError::CborDecode` if opcode is not recognized
     pub fn decode(opcode: Opcode, bytes: &[u8]) -> Result<Self> {
@@ -385,7 +385,7 @@ impl Payload {
     /// This method handles the logic-to-transport conversion:
     /// - Encodes the payload to CBOR bytes
     /// - Sets the correct opcode in the header
-    /// - Creates a Frame with automatic payload_size calculation
+    /// - Creates a Frame with automatic `payload_size` calculation
     ///
     /// # Errors
     ///

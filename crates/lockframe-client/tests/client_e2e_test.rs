@@ -14,7 +14,7 @@ use turmoil::Builder;
 /// Test room ID
 const ROOM_ID: u128 = 0x1234_5678_9abc_def0_1234_5678_9abc_def0;
 
-/// Extract SendFrame actions
+/// Extract `SendFrame` actions
 fn extract_send_frames(actions: &[ClientAction]) -> Vec<Frame> {
     actions
         .iter()
@@ -55,7 +55,7 @@ fn client_large_message_handling() {
             let plaintext = vec![b'X'; size];
             let actions = alice_client
                 .handle(ClientEvent::SendMessage { room_id: ROOM_ID, plaintext: plaintext.clone() })
-                .expect(&format!("send {}-byte message", size));
+                .unwrap_or_else(|_| panic!("send {size}-byte message"));
 
             let frames = extract_send_frames(&actions);
             assert_eq!(frames.len(), 1);
@@ -64,18 +64,12 @@ fn client_large_message_handling() {
             // (includes nonce, auth tag, CBOR overhead)
             assert!(
                 frames[0].payload.len() > size,
-                "Encrypted {}B message should be larger than plaintext",
-                size
+                "Encrypted {size}B message should be larger than plaintext"
             );
 
             // Oracle: Check reasonable overhead (CBOR + nonce + tag < 500 bytes typically)
             let overhead = frames[0].payload.len() - size;
-            assert!(
-                overhead < 500,
-                "Overhead for {}B message is {}B, expected < 500B",
-                size,
-                overhead
-            );
+            assert!(overhead < 500, "Overhead for {size}B message is {overhead}B, expected < 500B");
         }
 
         Ok(())
@@ -211,7 +205,7 @@ fn client_encryption_determinism() {
             let actions = alice_client1
                 .handle(ClientEvent::SendMessage {
                     room_id: ROOM_ID,
-                    plaintext: format!("Message {}", i).into_bytes(),
+                    plaintext: format!("Message {i}").into_bytes(),
                 })
                 .expect("send message 1");
 
@@ -234,7 +228,7 @@ fn client_encryption_determinism() {
             let actions = alice_client2
                 .handle(ClientEvent::SendMessage {
                     room_id: room_id_2,
-                    plaintext: format!("Message {}", i).into_bytes(),
+                    plaintext: format!("Message {i}").into_bytes(),
                 })
                 .expect("send message 2");
 
@@ -257,7 +251,7 @@ fn client_encryption_determinism() {
             let actions = alice_client3
                 .handle(ClientEvent::SendMessage {
                     room_id: room_id_3,
-                    plaintext: format!("Message {}", i).into_bytes(),
+                    plaintext: format!("Message {i}").into_bytes(),
                 })
                 .expect("send message 3");
 

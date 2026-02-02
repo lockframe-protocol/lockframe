@@ -28,7 +28,7 @@ use crate::{
 /// be safely cast from untrusted network bytes - all 128-byte patterns are
 /// valid, preventing undefined behavior. The signature field binds the entire
 /// header to an MLS epoch. Verification happens separately after parsing to
-/// allow routing before authentication. The log_index provides a monotonic
+/// allow routing before authentication. The `log_index` provides a monotonic
 /// sequence number   per room. Combined with the `hlc_timestamp`, this prevents
 /// replay attacks.
 ///
@@ -219,7 +219,7 @@ impl FrameHeader {
 
     /// Monotonic sequence number within this room's log.
     ///
-    /// Only meaningful for sequenced opcodes (AppMessage, Commit, Proposal).
+    /// Only meaningful for sequenced opcodes (`AppMessage`, Commit, Proposal).
     /// For Welcome frames, use [`Self::recipient_id()`] instead.
     #[must_use]
     pub fn log_index(&self) -> u64 {
@@ -267,7 +267,7 @@ impl FrameHeader {
         &self.signature
     }
 
-    /// Bytes to sign (excludes mutable context_id and signature itself).
+    /// Bytes to sign (excludes mutable `context_id` and signature itself).
     ///
     /// Returns bytes 0-39 + 48-63 (56 bytes total).
     #[must_use]
@@ -394,18 +394,18 @@ mod tests {
         type Parameters = ();
         type Strategy = BoxedStrategy<Self>;
 
-        fn arbitrary_with(_: Self::Parameters) -> Self::Strategy {
+        fn arbitrary_with((): Self::Parameters) -> Self::Strategy {
             (
-                arbitrary_bytes::<2>(),               // opcode
-                any::<u8>(),                          // flags
-                arbitrary_bytes::<4>(),               // request_id (u32)
-                arbitrary_bytes::<16>(),              // room_id
-                arbitrary_bytes::<8>(),               // sender_id
-                arbitrary_bytes::<8>(),               // context_id
-                arbitrary_bytes::<8>(),               // hlc_timestamp
-                arbitrary_bytes::<8>(),               // epoch
-                0u32..=FrameHeader::MAX_PAYLOAD_SIZE, // payload_size
-                arbitrary_bytes::<64>(),              // signature
+                arbitrary_bytes::<2>(),        // opcode
+                any::<u8>(),                   // flags
+                arbitrary_bytes::<4>(),        // request_id (u32)
+                arbitrary_bytes::<16>(),       // room_id
+                arbitrary_bytes::<8>(),        // sender_id
+                arbitrary_bytes::<8>(),        // context_id
+                arbitrary_bytes::<8>(),        // hlc_timestamp
+                arbitrary_bytes::<8>(),        // epoch
+                0u32..=Self::MAX_PAYLOAD_SIZE, // payload_size
+                arbitrary_bytes::<64>(),       // signature
             )
                 .prop_map(
                     |(
@@ -420,9 +420,9 @@ mod tests {
                         payload_size,
                         signature,
                     )| {
-                        FrameHeader {
-                            magic: FrameHeader::MAGIC.to_be_bytes(),
-                            version: FrameHeader::VERSION,
+                        Self {
+                            magic: Self::MAGIC.to_be_bytes(),
+                            version: Self::VERSION,
                             flags,
                             opcode,
                             request_id,

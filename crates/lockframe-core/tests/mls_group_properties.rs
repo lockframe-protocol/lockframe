@@ -1,8 +1,8 @@
 //! Tests for MLS group commit lifecycle.
 //!
 //! These tests verify critical invariants:
-//! - Pending commit is tracked after add_members/remove_members
-//! - Epoch advances after merge_pending_commit
+//! - Pending commit is tracked after `add_members/remove_members`
+//! - Epoch advances after `merge_pending_commit`
 //! - Timeout detection works correctly
 
 use std::time::Duration;
@@ -12,7 +12,7 @@ use lockframe_core::{
     mls::{MlsAction, MlsGroup},
 };
 
-/// INVARIANT: After add_members, has_pending_commit returns true.
+/// INVARIANT: After `add_members`, `has_pending_commit` returns true.
 ///
 /// This test verifies that the commit lifecycle is properly initialized
 /// when adding members to a group.
@@ -50,7 +50,7 @@ fn add_members_sets_pending_commit() {
     assert!(has_commit, "add_members should produce SendCommit action");
 }
 
-/// INVARIANT: remove_members also sets pending commit.
+/// INVARIANT: `remove_members` also sets pending commit.
 #[test]
 fn remove_members_sets_pending_commit() {
     let env = MockEnv::with_crypto_rng();
@@ -121,9 +121,7 @@ fn merge_commit_advances_epoch_by_one() {
     assert_eq!(
         epoch_after,
         epoch_before + 1,
-        "Epoch should increase by 1 after merge: {} -> {}",
-        epoch_before,
-        epoch_after
+        "Epoch should increase by 1 after merge: {epoch_before} -> {epoch_after}"
     );
 }
 
@@ -201,7 +199,7 @@ fn sequential_commits_advance_epoch_correctly() {
         let epoch_after = group.epoch();
 
         // INVARIANT: Each commit advances epoch by exactly 1
-        assert_eq!(epoch_after, epoch_before + 1, "Commit {} should advance epoch by 1", i);
+        assert_eq!(epoch_after, epoch_before + 1, "Commit {i} should advance epoch by 1");
     }
 
     // Final epoch should be 3 (one commit per member added)

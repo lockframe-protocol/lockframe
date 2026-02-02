@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 /// 1. Client connects to server (QUIC handshake completes)
 /// 2. Client sends `Hello` with protocol version and capabilities
 /// 3. Server validates version compatibility
-/// 4. Server responds with `HelloReply` containing assigned session_id
+/// 4. Server responds with `HelloReply` containing assigned `session_id`
 /// 5. Client can now send MLS operations and application messages
 ///
 /// # Security
@@ -29,7 +29,7 @@ pub struct Hello {
     pub version: u8,
     /// Client capabilities (future use)
     pub capabilities: Vec<String>,
-    /// Client's sender ID (used for KeyPackage registry lookup)
+    /// Client's sender ID (used for `KeyPackage` registry lookup)
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub sender_id: Option<u64>,
     /// Authentication token (optional)
@@ -58,7 +58,7 @@ impl std::fmt::Debug for Hello {
 ///
 /// # Protocol Flow
 ///
-/// Sent as immediate response to client's `Hello`. The session_id in this
+/// Sent as immediate response to client's `Hello`. The `session_id` in this
 /// message must be used by the client in all subsequent frame headers to
 /// identify its session.
 ///
@@ -106,15 +106,15 @@ pub struct Goodbye {
 /// Sent by a client when it detects it's behind the server's epoch
 /// (e.g., after a commit timeout or epoch mismatch error).
 ///
-/// Client detects epoch mismatch, sends SyncRequest with from_log_index,
-/// server responds with SyncResponse containing frames, and client processes
+/// Client detects epoch mismatch, sends `SyncRequest` with `from_log_index`,
+/// server responds with `SyncResponse` containing frames, and client processes
 /// frames in order to catch up.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SyncRequest {
     /// Start replaying frames from this log index (inclusive).
     ///
     /// The client typically sets this to its last successfully processed
-    /// log_index + 1.
+    /// `log_index` + 1.
     pub from_log_index: u64,
 
     /// Maximum number of frames to return.
@@ -133,10 +133,10 @@ fn default_limit() -> u64 {
 ///
 /// Contains a batch of frames for the client to process in order.
 /// If `has_more` is true, the client should send another `SyncRequest`
-/// with `from_log_index` = last frame's log_index + 1.
+/// with `from_log_index` = last frame's `log_index` + 1.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SyncResponse {
-    /// Frames in log_index order.
+    /// Frames in `log_index` order.
     ///
     /// Each entry is the raw frame bytes (header + payload).
     /// Client should process in order.
@@ -144,7 +144,7 @@ pub struct SyncResponse {
 
     /// True if more frames are available after this batch.
     ///
-    /// If true, client should send another SyncRequest to continue.
+    /// If true, client should send another `SyncRequest` to continue.
     pub has_more: bool,
 
     /// Current server epoch for this room.

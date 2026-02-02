@@ -84,7 +84,7 @@ pub struct RoomSnapshot {
     pub epoch: u64,
     /// Tree hash for convergence checking.
     pub tree_hash: [u8; 32],
-    /// Member IDs in this room (BTreeSet for deterministic ordering).
+    /// Member IDs in this room (`BTreeSet` for deterministic ordering).
     pub members: BTreeSet<u64>,
     /// Number of messages received.
     pub message_count: usize,

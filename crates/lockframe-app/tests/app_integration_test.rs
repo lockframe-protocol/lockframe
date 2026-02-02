@@ -87,7 +87,7 @@ fn frames_by_opcode(frames: &[Frame], opcode: Opcode) -> Vec<Frame> {
     frames.iter().filter(|f| f.header.opcode_enum() == Some(opcode)).cloned().collect()
 }
 
-/// Extract GroupInfo payload from a frame.
+/// Extract `GroupInfo` payload from a frame.
 fn extract_group_info(frame: &Frame) -> Option<GroupInfoPayload> {
     match Payload::from_frame(frame.clone()).ok()? {
         Payload::GroupInfo(p) => Some(p),
@@ -132,7 +132,7 @@ fn create_command_creates_room() {
 
     // Oracle: Status message should indicate success
     assert!(
-        app.status_message().map_or(false, |m| m.contains("Joined room")),
+        app.status_message().is_some_and(|m| m.contains("Joined room")),
         "Status should show joined: {:?}",
         app.status_message()
     );

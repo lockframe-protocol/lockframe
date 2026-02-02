@@ -66,11 +66,11 @@ pub enum Opcode {
     ReInit = 0x1006,
     /// Server-generated external commit
     ExternalCommit = 0x1007,
-    /// Publish KeyPackage to registry (client → server)
+    /// Publish `KeyPackage` to registry (client → server)
     KeyPackagePublish = 0x1008,
-    /// Fetch KeyPackage from registry (client → server, server → client)
+    /// Fetch `KeyPackage` from registry (client → server, server → client)
     KeyPackageFetch = 0x1009,
-    /// Request GroupInfo for external join (client → server)
+    /// Request `GroupInfo` for external join (client → server)
     GroupInfoRequest = 0x100A,
 
     // Application Messages (0x2000-0x2FFF)

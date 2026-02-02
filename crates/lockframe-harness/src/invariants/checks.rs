@@ -20,18 +20,18 @@ impl Invariant for ActiveRoomInRooms {
 
     fn check(&self, state: &SystemSnapshot) -> InvariantResult {
         for client in &state.clients {
-            if let Some(active) = client.active_room {
-                if !client.rooms.contains_key(&active) {
-                    return Err(Violation {
-                        invariant: self.kind(),
-                        message: format!(
-                            "client {}: active_room {} not in rooms {:?}",
-                            client.id,
-                            active,
-                            client.rooms.keys().collect::<Vec<_>>()
-                        ),
-                    });
-                }
+            if let Some(active) = client.active_room
+                && !client.rooms.contains_key(&active)
+            {
+                return Err(Violation {
+                    invariant: self.kind(),
+                    message: format!(
+                        "client {}: active_room {} not in rooms {:?}",
+                        client.id,
+                        active,
+                        client.rooms.keys().collect::<Vec<_>>()
+                    ),
+                });
             }
         }
         Ok(())

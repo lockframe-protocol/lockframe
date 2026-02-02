@@ -22,7 +22,7 @@ pub enum StorageError {
 
     /// Log index conflict (gap in sequence)
     ///
-    /// This error occurs when trying to store a frame at a log_index that
+    /// This error occurs when trying to store a frame at a `log_index` that
     /// doesn't match the expected next position. For example, storing at
     /// index 5 when the room only has 3 frames (expected index 3).
     #[error("log index conflict: expected {expected}, got {got}")]

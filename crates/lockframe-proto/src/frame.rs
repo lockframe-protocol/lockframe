@@ -51,7 +51,7 @@ pub struct Frame {
 }
 
 impl Frame {
-    /// Create a new frame with automatic payload_size calculation
+    /// Create a new frame with automatic `payload_size` calculation
     ///
     /// The header's `payload_size` field is automatically set to match
     /// the actual payload length, ensuring consistency.
@@ -89,14 +89,14 @@ impl Frame {
     ///
     /// # Errors
     ///
-    /// - `ProtocolError::PayloadTooLarge` if payload exceeds MAX_PAYLOAD_SIZE
+    /// - `ProtocolError::PayloadTooLarge` if payload exceeds `MAX_PAYLOAD_SIZE`
     ///   (16 MB)
     ///
     /// # Security
     ///
     /// - Size Limit Enforcement: This is the enforcement point for the 16 MB
     ///   payload limit. Frames exceeding this size are rejected to prevent
-    ///   memory exhaustion DoS attacks.
+    ///   memory exhaustion `DoS` attacks.
     ///
     /// - No Serialization: This function performs simple memory copies with no
     ///   parsing or transformation. There are no opportunities for injection or
@@ -144,7 +144,7 @@ impl Frame {
         let header = FrameHeader::from_bytes(bytes)?;
 
         let payload_size = header.payload_size() as usize;
-        let total_size = FrameHeader::SIZE.checked_add(payload_size).ok_or_else(|| {
+        let total_size = FrameHeader::SIZE.checked_add(payload_size).ok_or({
             ProtocolError::PayloadTooLarge {
                 size: payload_size,
                 max: FrameHeader::MAX_PAYLOAD_SIZE as usize,
@@ -191,9 +191,9 @@ mod tests {
         type Parameters = ();
         type Strategy = BoxedStrategy<Self>;
 
-        fn arbitrary_with(_: Self::Parameters) -> Self::Strategy {
+        fn arbitrary_with((): Self::Parameters) -> Self::Strategy {
             (any::<FrameHeader>(), any::<Vec<u8>>())
-                .prop_map(|(header, payload_bytes)| Frame::new(header, payload_bytes))
+                .prop_map(|(header, payload_bytes)| Self::new(header, payload_bytes))
                 .boxed()
         }
     }

@@ -77,16 +77,16 @@ where
             return Ok(true);
         }
 
-        if self.driver.is_connected() {
-            if let Some(frame) = self.driver.recv_frame().await {
-                if let Some(Opcode::HelloReply) = frame.header.opcode_enum() {
-                    self.handle_hello_reply(frame).await?;
-                } else {
-                    let events = self.bridge.handle_frame(frame);
-                    self.send_outgoing_frames().await?;
-                    if self.process_bridge_events(events).await? {
-                        return Ok(true);
-                    }
+        if self.driver.is_connected()
+            && let Some(frame) = self.driver.recv_frame().await
+        {
+            if let Some(Opcode::HelloReply) = frame.header.opcode_enum() {
+                self.handle_hello_reply(frame).await?;
+            } else {
+                let events = self.bridge.handle_frame(frame);
+                self.send_outgoing_frames().await?;
+                if self.process_bridge_events(events).await? {
+                    return Ok(true);
                 }
             }
         }
@@ -137,7 +137,7 @@ where
         Ok(false)
     }
 
-    /// Handle HelloReply frame to complete connection handshake.
+    /// Handle `HelloReply` frame to complete connection handshake.
     async fn handle_hello_reply(&mut self, frame: Frame) -> Result<(), D::Error> {
         let payload = match Payload::from_frame(frame) {
             Ok(p) => p,

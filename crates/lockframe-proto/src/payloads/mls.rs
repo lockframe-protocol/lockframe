@@ -7,16 +7,16 @@ use serde::{Deserialize, Serialize};
 
 /// Key package upload
 ///
-/// Contains a serialized MLS KeyPackage for joining groups.
+/// Contains a serialized MLS `KeyPackage` for joining groups.
 ///
 /// # Protocol Flow
 ///
-/// Sent by a client who wants to join a room. The server stores this KeyPackage
-/// and later includes it in a Welcome message when the client is added to the
-/// group by another member's Commit.
+/// Sent by a client who wants to join a room. The server stores this
+/// `KeyPackage` and later includes it in a Welcome message when the client is
+/// added to the group by another member's Commit.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct KeyPackageData {
-    /// Serialized MLS KeyPackage (from openmls)
+    /// Serialized MLS `KeyPackage` (from openmls)
     pub key_package_bytes: Vec<u8>,
 }
 
@@ -70,7 +70,7 @@ pub enum ProposalType {
 /// Sent by a group member to finalize pending Proposals and advance the epoch:
 /// 1. Member creates Commit referencing pending Proposals
 /// 2. Server validates Commit (signatures, epoch match)
-/// 3. Server sequences Commit with monotonic log_index
+/// 3. Server sequences Commit with monotonic `log_index`
 /// 4. Server broadcasts to all group members
 /// 5. All members apply Commit and advance to new epoch
 /// 6. Old epoch keys are deleted (forward secrecy)
@@ -96,9 +96,9 @@ pub struct CommitData {
 /// # Protocol Flow
 ///
 /// Sent to a newly added member after a Commit that included an Add proposal:
-/// 1. Member A sends Add proposal (references member B's KeyPackage)
+/// 1. Member A sends Add proposal (references member B's `KeyPackage`)
 /// 2. Member A or another member sends Commit including the Add
-/// 3. Server generates Welcome message encrypted to B's KeyPackage
+/// 3. Server generates Welcome message encrypted to B's `KeyPackage`
 /// 4. Server sends Welcome directly to B (not broadcast to group)
 /// 5. B decrypts Welcome and joins the group at current epoch
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -110,26 +110,26 @@ pub struct WelcomeData {
     pub epoch: u64,
 }
 
-/// Publish a KeyPackage to the server registry.
+/// Publish a `KeyPackage` to the server registry.
 ///
-/// Sent by a client to make their KeyPackage available for others to fetch
+/// Sent by a client to make their `KeyPackage` available for others to fetch
 /// when adding them to rooms.
 ///
 /// # Protocol Flow
 ///
-/// 1. Client generates KeyPackage via `generate_key_package()`
-/// 2. Client sends KeyPackagePublish with serialized KeyPackage
-/// 3. Server stores KeyPackage indexed by sender's user_id
-/// 4. Other clients can fetch this KeyPackage to add this user to rooms
+/// 1. Client generates `KeyPackage` via `generate_key_package()`
+/// 2. Client sends `KeyPackagePublish` with serialized `KeyPackage`
+/// 3. Server stores `KeyPackage` indexed by sender's `user_id`
+/// 4. Other clients can fetch this `KeyPackage` to add this user to rooms
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct KeyPackagePublishRequest {
-    /// Serialized MLS KeyPackage (from openmls/mls-rs).
+    /// Serialized MLS `KeyPackage` (from openmls/mls-rs).
     pub key_package_bytes: Vec<u8>,
-    /// KeyPackage hash reference for deduplication.
+    /// `KeyPackage` hash reference for deduplication.
     pub hash_ref: Vec<u8>,
 }
 
-/// Fetch a KeyPackage from the server registry.
+/// Fetch a `KeyPackage` from the server registry.
 ///
 /// Request: Client sends with `user_id` populated, `key_package_bytes` empty.
 /// Response: Server sends with `key_package_bytes` populated.
@@ -137,57 +137,57 @@ pub struct KeyPackagePublishRequest {
 /// # Protocol Flow
 ///
 /// 1. Client A wants to add user B to a room
-/// 2. Client A sends KeyPackageFetch with `user_id = B`
-/// 3. Server looks up B's KeyPackage and returns it
-/// 4. Client A uses the KeyPackage in AddMembers
+/// 2. Client A sends `KeyPackageFetch` with `user_id = B`
+/// 3. Server looks up B's `KeyPackage` and returns it
+/// 4. Client A uses the `KeyPackage` in `AddMembers`
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct KeyPackageFetchPayload {
-    /// User ID whose KeyPackage to fetch (request) or owner (response).
+    /// User ID whose `KeyPackage` to fetch (request) or owner (response).
     pub user_id: u64,
-    /// Serialized MLS KeyPackage. Empty in request, populated in response.
+    /// Serialized MLS `KeyPackage`. Empty in request, populated in response.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub key_package_bytes: Vec<u8>,
-    /// KeyPackage hash reference. Empty in request, populated in response.
+    /// `KeyPackage` hash reference. Empty in request, populated in response.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub hash_ref: Vec<u8>,
 }
 
-/// Request GroupInfo for external join.
+/// Request `GroupInfo` for external join.
 ///
 /// Sent by a client who wants to join a room via external commit.
 ///
 /// # Protocol Flow
 ///
 /// 1. Client wants to join room without being invited
-/// 2. Client sends GroupInfoRequest with target room_id
-/// 3. Server looks up the latest GroupInfo for that room
-/// 4. Server responds with GroupInfoPayload containing the GroupInfo
-/// 5. Client uses GroupInfo to create an external commit
+/// 2. Client sends `GroupInfoRequest` with target `room_id`
+/// 3. Server looks up the latest `GroupInfo` for that room
+/// 4. Server responds with `GroupInfoPayload` containing the `GroupInfo`
+/// 5. Client uses `GroupInfo` to create an external commit
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GroupInfoRequest {
-    /// Room ID to fetch GroupInfo for.
+    /// Room ID to fetch `GroupInfo` for.
     pub room_id: u128,
 }
 
-/// GroupInfo for external joins (MLS RFC 9420 §12.4.3.1).
+/// `GroupInfo` for external joins (MLS RFC 9420 §12.4.3.1).
 ///
 /// Contains the public group state needed to create an external commit.
 ///
 /// # Protocol Flow
 ///
-/// Sent by the server in response to GroupInfoRequest:
-/// 1. Server receives GroupInfoRequest for a room
-/// 2. Server fetches the latest GroupInfo from storage
-/// 3. Server sends GroupInfoPayload to the requesting client
-/// 4. Client creates an external commit using the GroupInfo
+/// Sent by the server in response to `GroupInfoRequest`:
+/// 1. Server receives `GroupInfoRequest` for a room
+/// 2. Server fetches the latest `GroupInfo` from storage
+/// 3. Server sends `GroupInfoPayload` to the requesting client
+/// 4. Client creates an external commit using the `GroupInfo`
 /// 5. Client sends external commit to join the room
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GroupInfoPayload {
-    /// Room this GroupInfo belongs to.
+    /// Room this `GroupInfo` belongs to.
     pub room_id: u128,
-    /// Current MLS epoch when this GroupInfo was generated.
+    /// Current MLS epoch when this `GroupInfo` was generated.
     pub epoch: u64,
-    /// TLS-serialized MLS GroupInfo (from openmls).
+    /// TLS-serialized MLS `GroupInfo` (from openmls).
     pub group_info_bytes: Vec<u8>,
 }
 

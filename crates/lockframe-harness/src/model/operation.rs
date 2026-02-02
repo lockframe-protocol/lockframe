@@ -56,8 +56,8 @@ pub enum Operation {
 
     /// Join a room via external commit.
     ///
-    /// The joiner creates an external commit using the room's GroupInfo.
-    /// This is different from AddMember where an existing member invites.
+    /// The joiner creates an external commit using the room's `GroupInfo`.
+    /// This is different from `AddMember` where an existing member invites.
     ExternalJoin {
         /// Client joining the room.
         joiner_id: ClientId,
@@ -168,10 +168,10 @@ pub enum OperationError {
     /// Cannot add member who is already in the room.
     AlreadyMember,
 
-    /// Cannot remove self (use LeaveRoom instead).
+    /// Cannot remove self (use `LeaveRoom` instead).
     CannotRemoveSelf,
 
-    /// No GroupInfo available for external join.
+    /// No `GroupInfo` available for external join.
     NoGroupInfo,
 
     /// Epoch mismatch (message from wrong epoch).
