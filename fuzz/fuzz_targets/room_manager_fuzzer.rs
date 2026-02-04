@@ -29,7 +29,7 @@ use ed25519_dalek::{Signer, SigningKey};
 use libfuzzer_sys::fuzz_target;
 use lockframe_core::mls::MlsGroupState;
 use lockframe_proto::{Frame, FrameHeader, Opcode};
-use lockframe_server::{RoomAction, RoomManager, Storage, SystemEnv, storage::MemoryStorage};
+use lockframe_server::{storage::MemoryStorage, RoomAction, RoomManager, Storage, SystemEnv};
 
 #[derive(Debug, Clone, Arbitrary)]
 struct RoomScenario {
@@ -215,13 +215,18 @@ fn create_signed_frame(
     sender_id: u64,
     epoch: u64,
     room_id: u128,
-    opcode: Opcode,
+    opcode_enum: Opcode,
 ) -> Frame {
-    let mut header = FrameHeader::new(opcode);
+    let mut header = FrameHeader::new(opcode_enum);
     header.set_sender_id(sender_id);
     header.set_epoch(epoch);
     header.set_room_id(room_id);
-    header.set_log_index(0);
+
+    if opcode_enum == Opcode::Welcome {
+        header.set_recipient_id(0);
+    } else {
+        header.set_log_index(0);
+    }
 
     let signature = signing_key.sign(&header.signing_data());
     header.set_signature(signature.to_bytes());
