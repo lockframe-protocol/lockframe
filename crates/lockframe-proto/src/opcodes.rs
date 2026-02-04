@@ -210,16 +210,58 @@ mod tests {
 
     #[test]
     fn opcode_round_trip() {
-        let opcodes = [
+        let all_opcodes = [
+            // Session Management
             Opcode::Hello,
+            Opcode::HelloReply,
+            Opcode::Goodbye,
+            Opcode::Ping,
+            Opcode::Pong,
+            Opcode::SyncRequest,
+            Opcode::SyncResponse,
+            Opcode::Error,
+            // MLS Operations
+            Opcode::KeyPackage,
+            Opcode::Proposal,
             Opcode::Commit,
+            Opcode::Welcome,
+            Opcode::GroupInfo,
+            Opcode::PSKProposal,
+            Opcode::ReInit,
+            Opcode::ExternalCommit,
+            Opcode::KeyPackagePublish,
+            Opcode::KeyPackageFetch,
+            Opcode::GroupInfoRequest,
+            // Application Messages
             Opcode::AppMessage,
+            Opcode::AppReceipt,
+            Opcode::AppReaction,
+            Opcode::AppEdit,
+            Opcode::AppDelete,
+            Opcode::Typing,
+            Opcode::Presence,
+            // Moderation
             Opcode::Redact,
+            Opcode::Ban,
+            Opcode::Unban,
+            Opcode::Kick,
+            Opcode::Mute,
+            Opcode::Pin,
+            Opcode::Report,
+            // Federation
             Opcode::FedAppend,
+            Opcode::FedSync,
+            Opcode::FedAck,
+            Opcode::FedNack,
+            Opcode::FedQuery,
+            // Storage
             Opcode::CASPut,
+            Opcode::CASGet,
+            Opcode::CASDelete,
+            Opcode::CASProof,
         ];
 
-        for opcode in opcodes {
+        for opcode in all_opcodes {
             let value = opcode.to_u16();
             let parsed = Opcode::from_u16(value);
             assert_eq!(Some(opcode), parsed);
